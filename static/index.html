@@ -432,7 +432,7 @@ function render(){
 
   // Bottom nav
   h+=`<div class="tabs">
-    ${[["dashboard","📊","Dashboard"],["signals","📋","History"],["chain","⛓","Chain"],["stock","🔍","Stocks"],["rules","⚙","${S.isAdmin?"Admin":"Guide"}"]].map(([id,icon,l])=>
+    ${[["dashboard","📊","Dashboard"],["signals","📋","History"],["chain","⛓","Chain"],["stock","🔍","Stocks"],["rules","⚙","Rules"]].map(([id,icon,l])=>
       `<button class="tab ${S.tab===id?"active":""}" onclick="S.tab='${id}';render();${id==="signals"?"loadHistory()":""}"><span class="tab-icon">${icon}</span>${l}</button>`
     ).join("")}
   </div>`;
