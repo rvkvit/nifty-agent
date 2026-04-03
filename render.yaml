@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: nifty-trading-agent
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn server:app --bind 0.0.0.0:$PORT --workers 2 --timeout 30
+    envVars:
+      - key: KITE_API_KEY
+        sync: false
+      - key: KITE_API_SECRET
+        sync: false
+      - key: PUBLIC_URL
+        sync: false
+      - key: ACCESS_PASSWORD
+        value: nifty2026
+      - key: SECRET_KEY
+        generateValue: true
+      - key: PYTHON_VERSION
+        value: 3.11.0
