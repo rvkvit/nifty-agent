@@ -33,6 +33,17 @@ log=logging.getLogger(__name__)
 admin_state={"token":None,"instruments":None,"inst_date":None}
 user_sessions={}  # user_id -> {token, api_key, api_secret}
 signal_history=[]
+HIST_FILE="/tmp/nifty_signals.json"
+def save_signals():
+    try:
+        with open(HIST_FILE,"w") as f:json.dump(signal_history[:100],f)
+    except:pass
+def load_signals():
+    global signal_history
+    try:
+        with open(HIST_FILE,"r") as f:signal_history=json.load(f)
+    except:signal_history=[]
+load_signals()
 scan_results={"picks":[],"last_scan":None,"scanning":False}
 scanner_cfg={"enabled":False,"auto":False,"interval":10}
 
@@ -92,15 +103,34 @@ def send_tg(msg):
     except:pass
 
 def format_signal_tg(d):
-    dr="🟢" if d.get("dir")=="BULLISH" else "🔴"
-    return f"""{dr} <b>SIGNAL — {d.get('tradingsymbol','')}</b>
+    dr="\U0001f7e2" if d.get("dir")=="BULLISH" else "\U0001f534"
+    conf=d.get('conf',0)
+    bars="\u2588"*min(conf,7)+"\u2591"*(7-min(conf,7))
+    return f"""{dr} <b>NIFTY AGENT \u2014 NEW SIGNAL</b> {dr}
 
-💰 Entry: ₹{d.get('entryPrice',0)}
-⛔ SL: ₹{d.get('slPrice',0)}
-🎯 T1: ₹{d.get('t1Price',0)} (book 50%)
-🚀 T2: ₹{d.get('t2Price',0)}
-📊 {d.get('lots',1)}×{d.get('lotSize',65)} | R:R 1:{d.get('rr',0)}
-🕐 {d.get('time','')}"""
+\U0001f4cb <b>{d.get('tradingsymbol','')}</b>
+Direction: <b>{d.get('dir','')}</b>
+Confidence: [{bars}] {conf}/7
+
+\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+
+\U0001f4b0 <b>ENTRY:</b> \u20b9{d.get('entryPrice',0)}
+\u26d4 <b>STOP LOSS:</b> \u20b9{d.get('slPrice',0)}
+\U0001f3af <b>TARGET 1:</b> \u20b9{d.get('t1Price',0)} (book 50%)
+\U0001f680 <b>TARGET 2:</b> \u20b9{d.get('t2Price',0)} (trail SL)
+
+\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+
+\U0001f4ca Lots: {d.get('lots',1)} \u00d7 {d.get('lotSize',65)}
+\U0001f4b8 Max Risk: \u20b9{d.get('totalRisk',0)}
+\U0001f48e Potential: \u20b9{d.get('totalReward',0)}
+\u2696\ufe0f Risk:Reward = 1:{d.get('rr',0)}
+
+\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+\U0001f550 {d.get('time','')} | Spot: {d.get('spotAtSignal','')}
+OI: {d.get('oi',0)} | Vol: {d.get('volume',0)}
+
+\u26a0\ufe0f <i>Max 2% capital risk. Always use SL.</i>"""
 
 # ─── OPTION FINDING ─────────────────────────────────────────
 def find_options(idx,spot):
@@ -345,6 +375,17 @@ def ping():return jsonify({"ok":True})
 def status():
     return jsonify({"authenticated":get_kite_auth() is not None,"is_admin":session.get("is_admin",False),"instruments_count":len(admin_state["instruments"]) if admin_state["instruments"] else 0,"use_own_api":session.get("use_own_api",False),"scanner":scanner_cfg})
 
+@app.route("/api/market-data-both")
+@require_auth
+def market_data_both():
+    h=get_kite_auth()
+    if not h:return jsonify({"error":"Kite not connected"}),503
+    sr=kite_get("/quote",params=[("i","NSE:NIFTY 50"),("i","NSE:NIFTY BANK")])
+    if "error" in sr:return jsonify(sr),500
+    nq=sr.get("data",{}).get("NSE:NIFTY 50",{})
+    bq=sr.get("data",{}).get("NSE:NIFTY BANK",{})
+    return jsonify({"data":{"nifty":{"spot":nq.get("last_price",0),"ohlc":nq.get("ohlc",{})},"banknifty":{"spot":bq.get("last_price",0),"ohlc":bq.get("ohlc",{})}}})
+
 @app.route("/api/market-data/<idx>")
 @require_auth
 def market_data(idx):
@@ -392,6 +433,7 @@ def signals():
         d=request.get_json()
         if d:d.update(timestamp=datetime.now().isoformat(),date=datetime.now().strftime("%Y-%m-%d"));signal_history.insert(0,d)
         if len(signal_history)>100:signal_history.pop()
+        save_signals()
         threading.Thread(target=send_tg,args=(format_signal_tg(d),),daemon=True).start()
         return jsonify({"ok":True})
     return jsonify({"signals":signal_history[:50]})
@@ -409,6 +451,7 @@ def update_sig():
             elif oc=="t2_hit":s["pnl"]=round((s.get("t2Price",e)-e)*lots*ls)
             em={"sl_hit":"⛔","t1_hit":"🎯","t2_hit":"🚀"}.get(oc,"📝")
             pnl_s=f"₹{s.get('pnl',0):+,.0f}" if s.get("pnl") is not None else ""
+            save_signals()
             threading.Thread(target=send_tg,args=(f"{em} <b>{s.get('tradingsymbol','')}</b> — {oc.upper().replace('_',' ')}\n{pnl_s}",),daemon=True).start()
             break
     return jsonify({"ok":True})
@@ -458,6 +501,23 @@ def clear():
 def tg_test():
     if not TG_ENABLED:return jsonify({"error":"Set TG_BOT_TOKEN & TG_CHANNEL_ID"}),400
     send_tg("🔔 <b>Test</b> — Telegram working! ✅");return jsonify({"ok":True,"message":"Sent!"})
+
+@app.route("/api/eod-check",methods=["POST"])
+@require_auth
+def eod_check():
+    if not session.get("is_admin"):return jsonify({"error":"Admin"}),403
+    open_trades=[s for s in signal_history if s.get("outcome")=="open"]
+    if not open_trades:return jsonify({"message":"No open trades"})
+    for t in open_trades:
+        t["outcome"]="eod_exit";t["exit_time"]=datetime.now().isoformat()
+    save_signals()
+    if TG_ENABLED:
+        msg="\U0001f514 <b>END OF DAY REVIEW</b>\n\n"
+        for t in open_trades:
+            msg+=f"\U0001f4cb <b>{t.get('tradingsymbol','')}</b>\nEntry: \u20b9{t.get('entryPrice',0)}\n\U0001f4a1 <b>EXIT</b> \u2014 Options lose value overnight (theta decay). Close before 3:15 PM.\n\n"
+        msg+="\u26a0\ufe0f <i>Exit all F&O by 3:15 PM</i>"
+        threading.Thread(target=send_tg,args=(msg,),daemon=True).start()
+    return jsonify({"ok":True,"count":len(open_trades)})
 
 @app.route("/api/option-chain/<idx>")
 @require_auth
