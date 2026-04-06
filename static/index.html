@@ -515,7 +515,7 @@ function renderMain(){
 
   document.getElementById("main").innerHTML=o;
   // Initialize TradingView widgets
-  if(S.tab==="chain"){initTV("tv-idx",S.idx==="NIFTY"?"NSE:NIFTY":"NSE:BANKNIFTY","5")}
+  if(S.tab==="chain"){initTV("tv-idx",S.idx==="NIFTY"?"BSE:SENSEX":"BSE:BANKEX","5")}
 }
 function initTV(containerId,symbol,interval){
   var el=document.getElementById(containerId);if(!el)return;
@@ -613,7 +613,7 @@ function renderStockContent(){
   }
 
   el.innerHTML=o;
-  if(S.stockData){initTV('tv-stock','NSE:'+S.stockData.symbol,'D')}
+  if(S.stockData){initTV('tv-stock','BSE:'+S.stockData.symbol,'D')}
 }
 
 function render(){
