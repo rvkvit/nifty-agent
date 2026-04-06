@@ -18,6 +18,84 @@ SECRET_KEY=os.environ.get("SECRET_KEY",secrets.token_hex(24))
 PORT=int(os.environ.get("PORT",5000))
 KITE_BASE="https://api.kite.trade"
 
+# Telegram Bot Integration
+TG_BOT_TOKEN=os.environ.get("TG_BOT_TOKEN","")
+TG_CHANNEL_ID=os.environ.get("TG_CHANNEL_ID","")
+TG_ENABLED=bool(TG_BOT_TOKEN and TG_CHANNEL_ID)
+
+def send_telegram(message):
+    """Send a message to the Telegram channel."""
+    if not TG_ENABLED:return
+    try:
+        url=f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
+        req.post(url,json={"chat_id":TG_CHANNEL_ID,"text":message,"parse_mode":"HTML","disable_web_page_preview":True},timeout=5)
+        logger.info("Telegram message sent")
+    except Exception as e:
+        logger.error(f"Telegram error: {e}")
+
+def format_signal_msg(d):
+    """Format a signal into a beautiful Telegram message."""
+    dir_emoji="🟢" if d.get("dir")=="BULLISH" else "🔴"
+    dir_text="BULLISH" if d.get("dir")=="BULLISH" else "BEARISH"
+    conf=d.get("conf",0)
+    bars="█"*conf+"░"*(7-conf)
+    return f"""
+{dir_emoji} <b>NIFTY AGENT — NEW SIGNAL</b> {dir_emoji}
+
+📋 <b>{d.get('tradingsymbol','N/A')}</b>
+Direction: <b>{dir_text}</b>
+Confidence: [{bars}] {conf}/7
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+💰 <b>ENTRY:</b> ₹{d.get('entryPrice',0)}
+⛔ <b>STOP LOSS:</b> ₹{d.get('slPrice',0)}
+🎯 <b>TARGET 1:</b> ₹{d.get('t1Price',0)} (book 50%)
+🚀 <b>TARGET 2:</b> ₹{d.get('t2Price',0)} (trail SL)
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+📊 Lots: {d.get('lots',1)} × {d.get('lotSize',65)}
+💸 Max Risk: ₹{d.get('totalRisk',0)}
+💎 Potential: ₹{d.get('totalReward',0)}
+⚖️ Risk:Reward = 1:{d.get('rr',0)}
+
+━━━━━━━━━━━━━━━━━━━━━━
+🕐 {d.get('time','')} | Spot: {d.get('spotAtSignal','')}
+OI: {d.get('oi',0)} | Vol: {d.get('volume',0)}
+
+⚠️ <i>Max 2% capital risk. Always use SL.</i>
+"""
+
+def format_outcome_msg(d):
+    """Format a signal outcome update for Telegram."""
+    outcome=d.get("outcome","")
+    sym=d.get("tradingsymbol","N/A")
+    pnl=d.get("pnl")
+    if outcome=="sl_hit":
+        emoji="⛔"
+        text="STOP LOSS HIT"
+    elif outcome=="t1_hit":
+        emoji="🎯"
+        text="TARGET 1 HIT"
+    elif outcome=="t2_hit":
+        emoji="🚀"
+        text="TARGET 2 HIT"
+    else:
+        emoji="📝"
+        text="MANUAL EXIT"
+    pnl_text=f"₹{pnl:+,.0f}" if pnl is not None else "N/A"
+    pnl_emoji="✅" if pnl and pnl>0 else "❌"
+    return f"""
+{emoji} <b>SIGNAL UPDATE — {text}</b>
+
+📋 <b>{sym}</b>
+{pnl_emoji} P&L: <b>{pnl_text}</b>
+
+Entry: ₹{d.get('entryPrice',0)} → {text}
+🕐 {d.get('exit_time','')}
+"""
+
 app=Flask(__name__,static_folder="static")
 app.secret_key=SECRET_KEY
 app.config["SESSION_COOKIE_SAMESITE"]="Lax"
@@ -199,7 +277,12 @@ def oc(idx):return market_data(idx)
 def signals_api():
     if request.method=="POST":
         d=request.get_json()
-        if d:d["timestamp"]=datetime.now().isoformat();d["date"]=datetime.now().strftime("%Y-%m-%d");signal_history.insert(0,d)
+        if d:
+            d["timestamp"]=datetime.now().isoformat()
+            d["date"]=datetime.now().strftime("%Y-%m-%d")
+            signal_history.insert(0,d)
+            # Send to Telegram
+            threading.Thread(target=send_telegram,args=(format_signal_msg(d),),daemon=True).start()
         if len(signal_history)>50:signal_history.pop()
         return jsonify({"ok":True})
     return jsonify({"signals":signal_history})
@@ -216,6 +299,8 @@ def update_signal():
             elif outcome=="t1_hit":s["pnl"]=round((s.get("t1Price",entry)-entry)*lots*ls,0)
             elif outcome=="t2_hit":s["pnl"]=round((s.get("t2Price",entry)-entry)*lots*ls,0)
             elif ep:s["pnl"]=round((ep-entry)*lots*ls,0)
+            # Send outcome to Telegram
+            threading.Thread(target=send_telegram,args=(format_outcome_msg(s),),daemon=True).start()
             break
     return jsonify({"ok":True,"signals":signal_history})
 
@@ -247,24 +332,32 @@ if __name__=="__main__":
     print(f"\n{'='*55}\n  NIFTY AGENT v4\n  {PUBLIC_URL}\n  User: {ACCESS_PASSWORD} | Admin: {ADMIN_PASSWORD}\n{'='*55}\n")
     app.run(host="0.0.0.0",port=PORT,debug=False)
 
-# ─── ADMIN KILL SWITCH ──────────────────────────────────────
+# ─── ADMIN ENDPOINTS ────────────────────────────────────────
 @app.route("/api/admin/disconnect", methods=["POST"])
 @require_login
 def admin_disconnect():
-    """Admin can kill the Kite session — stops all live data for everyone."""
-    if not session.get("is_admin"):
-        return jsonify({"error": "Admin only"}), 403
-    state["access_token"] = None
-    state["instruments"] = None
-    state["inst_date"] = None
-    logger.info("ADMIN: Kite session disconnected!")
-    return jsonify({"ok": True, "message": "Kite disconnected. Dashboard will show mock data."})
+    if not session.get("is_admin"):return jsonify({"error":"Admin only"}),403
+    state["access_token"]=None;state["instruments"]=None;state["inst_date"]=None
+    logger.info("ADMIN: Kite disconnected!")
+    if TG_ENABLED:threading.Thread(target=send_telegram,args=("⚠️ <b>ADMIN:</b> Kite session disconnected. Live data stopped.",),daemon=True).start()
+    return jsonify({"ok":True})
 
 @app.route("/api/admin/clear-signals", methods=["POST"])
-@require_login  
+@require_login
 def admin_clear():
-    """Admin can clear all signal history."""
-    if not session.get("is_admin"):
-        return jsonify({"error": "Admin only"}), 403
+    if not session.get("is_admin"):return jsonify({"error":"Admin only"}),403
     signal_history.clear()
-    return jsonify({"ok": True})
+    return jsonify({"ok":True})
+
+@app.route("/api/admin/telegram-test", methods=["POST"])
+@require_login
+def telegram_test():
+    if not session.get("is_admin"):return jsonify({"error":"Admin only"}),403
+    if not TG_ENABLED:return jsonify({"error":"Set TG_BOT_TOKEN and TG_CHANNEL_ID in Render env vars"}),400
+    send_telegram("🔔 <b>Nifty Agent — Test</b>\n\nTelegram is working! ✅\nSignals will appear here automatically.")
+    return jsonify({"ok":True,"message":"Test sent!"})
+
+@app.route("/api/admin/telegram-status")
+@require_login
+def telegram_status():
+    return jsonify({"enabled":TG_ENABLED,"bot_set":bool(TG_BOT_TOKEN),"channel_set":bool(TG_CHANNEL_ID)})

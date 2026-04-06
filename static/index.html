@@ -434,6 +434,7 @@ function render(){
       o+='<button class="btn" style="width:100%" onclick="window.open(\''+B+'/admin/login\',\'_blank\')">🔌 Connect Kite</button>';
       o+='<button class="btn" style="width:100%;color:var(--dm)" onclick="fetch(\''+B+'/api/admin/clear-signals\',{method:\'POST\'}).then(function(){S.signalHistory=[];S.todaySignals=[];render()})">🗑 Clear History</button>';
       o+='<button class="btn" style="width:100%;color:var(--or)" onclick="S.showConfig=true;render()">⚙ Configuration</button>';
+      o+='<button class="btn" style="width:100%;margin-top:6px;color:var(--bl)" onclick="fetch(B+\'/api/admin/telegram-test\',{method:\'POST\'}).then(function(r){return r.json()}).then(function(d){alert(d.message||d.error)})">📱 Test Telegram</button>';
       o+='</div><div style="margin-top:8px;padding:6px;border-radius:6px;background:var(--sf);font-size:9px;color:var(--dm)">Status: '+(S.backend&&S.backend.authenticated?"✅ Live":"❌ Off")+'</div></div>';
       o+='<div class="cd"><div class="ct">SIGNAL RULES</div>'+rl(["Score ≥"+CFG.minScore+" to fire","Max "+CFG.maxSignals+" signals/day","Same dir: 50pt move","Reversal: immediate","SL: 15min block","Renko: "+(CFG.useRenko?"ON":"OFF"),"P&F: "+(CFG.usePnF?"ON":"OFF")])+'</div>';
       o+='</div>';
