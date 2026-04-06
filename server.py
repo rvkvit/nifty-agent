@@ -361,3 +361,268 @@ def telegram_test():
 @require_login
 def telegram_status():
     return jsonify({"enabled":TG_ENABLED,"bot_set":bool(TG_BOT_TOKEN),"channel_set":bool(TG_CHANNEL_ID)})
+
+# ─── NIFTY 50 STOCK SCANNER ────────────────────────────────
+NIFTY50=[
+    "ADANIENT","ADANIPORTS","APOLLOHOSP","ASIANPAINT","AXISBANK",
+    "BAJAJ-AUTO","BAJFINANCE","BAJAJFINSV","BEL","BPCL",
+    "BHARTIARTL","BRITANNIA","CIPLA","COALINDIA","DRREDDY",
+    "EICHERMOT","GRASIM","HCLTECH","HDFCBANK","HDFCLIFE",
+    "HEROMOTOCO","HINDALCO","HINDUNILVR","ICICIBANK","INDUSINDBK",
+    "INFY","ITC","JSWSTEEL","KOTAKBANK","LT",
+    "M&M","MARUTI","NESTLEIND","NTPC","ONGC",
+    "POWERGRID","RELIANCE","SBILIFE","SBIN","SHRIRAMFIN",
+    "SUNPHARMA","TATACONSUM","TATAMOTORS","TATASTEEL","TCS",
+    "TECHM","TITAN","TRENT","ULTRACEMCO","WIPRO"
+]
+
+scan_results={"picks":[],"last_scan":None,"scanning":False}
+
+def compute_rsi(prices,n=14):
+    if len(prices)<n+1:return 50
+    gains,losses=0,0
+    for i in range(len(prices)-n,len(prices)):
+        d=prices[i]-prices[i-1]
+        if d>0:gains+=d
+        else:losses-=d
+    ag,al=gains/n,losses/n
+    return 100 if al==0 else round(100-100/(1+ag/al),1)
+
+def compute_ema(prices,n):
+    if len(prices)<n:return prices[-1] if prices else 0
+    k=2/(n+1);e=sum(prices[:n])/n
+    for i in range(n,len(prices)):e=prices[i]*k+e*(1-k)
+    return round(e,2)
+
+def scan_stock(symbol):
+    """Analyze a single stock and return a score + recommendation."""
+    try:
+        sym=f"NSE:{symbol}"
+        # Get quote
+        q=kite_get("/quote",params=[("i",sym)])
+        if "error" in q or "data" not in q:return None
+        qd=q.get("data",{}).get(sym)
+        if not qd:return None
+
+        ltp=qd.get("last_price",0)
+        if not ltp:return None
+        ohlc=qd.get("ohlc",{})
+        volume=qd.get("volume",0) or 0
+        prev_close=ohlc.get("close",ltp)
+        day_change=round(((ltp-prev_close)/prev_close)*100,2) if prev_close else 0
+        token=qd.get("instrument_token")
+        if not token:return None
+
+        # Get daily historical (60 days)
+        today=datetime.now()
+        hist=kite_get(f"/instruments/historical/{token}/day",
+                      params={"from":(today-timedelta(days=90)).strftime("%Y-%m-%d"),
+                              "to":today.strftime("%Y-%m-%d"),"oi":"0"})
+        candles=hist.get("data",{}).get("candles",[]) if "data" in hist else []
+        if len(candles)<20:return None
+
+        closes=[c[4] for c in candles]
+        highs=[c[2] for c in candles]
+        lows=[c[3] for c in candles]
+        volumes=[c[5] for c in candles]
+
+        # ─── 8-FACTOR SCORING ──────────────────────────
+        score=0
+        factors=[]
+
+        # 1. RSI (14)
+        rsi_val=compute_rsi(closes)
+        if rsi_val<30:score+=2;factors.append(("RSI "+str(rsi_val)+" oversold","bull"))
+        elif rsi_val<40:score+=1;factors.append(("RSI "+str(rsi_val)+" nearing oversold","bull"))
+        elif rsi_val>70:score-=2;factors.append(("RSI "+str(rsi_val)+" overbought","bear"))
+        elif rsi_val>60:score-=1;factors.append(("RSI "+str(rsi_val)+" nearing overbought","bear"))
+        else:factors.append(("RSI "+str(rsi_val)+" neutral","neutral"))
+
+        # 2. EMA 9/21 crossover
+        ema9=compute_ema(closes,9)
+        ema21=compute_ema(closes,21)
+        if ema9>ema21*1.005:score+=1;factors.append(("9EMA > 21EMA","bull"))
+        elif ema9<ema21*0.995:score-=1;factors.append(("9EMA < 21EMA","bear"))
+        else:factors.append(("EMAs flat","neutral"))
+
+        # 3. Price vs 50 EMA (trend)
+        ema50=compute_ema(closes,50) if len(closes)>=50 else compute_ema(closes,20)
+        if ltp>ema50*1.02:score+=1;factors.append(("Above 50EMA — uptrend","bull"))
+        elif ltp<ema50*0.98:score-=1;factors.append(("Below 50EMA — downtrend","bear"))
+        else:factors.append(("Near 50EMA","neutral"))
+
+        # 4. Volume surge (today vs 20-day avg)
+        avg_vol=sum(volumes[-20:])/20 if len(volumes)>=20 else sum(volumes)/len(volumes)
+        vol_ratio=round(volume/avg_vol,1) if avg_vol>0 else 1
+        if vol_ratio>2 and day_change>0:score+=1;factors.append(("Volume surge "+str(vol_ratio)+"x + up","bull"))
+        elif vol_ratio>2 and day_change<0:score-=1;factors.append(("Volume surge "+str(vol_ratio)+"x + down","bear"))
+        else:factors.append(("Volume normal "+str(vol_ratio)+"x","neutral"))
+
+        # 5. Supertrend
+        if len(closes)>=10:
+            atr=sum(abs(closes[i]-closes[i-1]) for i in range(len(closes)-10,len(closes)))/10
+            st_val=closes[-1]-2*atr
+            if closes[-1]>st_val:score+=1;factors.append(("Supertrend bullish","bull"))
+            else:score-=1;factors.append(("Supertrend bearish","bear"))
+
+        # 6. Price momentum (5-day vs 20-day return)
+        if len(closes)>=20:
+            ret5=((closes[-1]-closes[-5])/closes[-5])*100 if closes[-5] else 0
+            ret20=((closes[-1]-closes[-20])/closes[-20])*100 if closes[-20] else 0
+            if ret5>1 and ret20>3:score+=1;factors.append(("Strong momentum +"+str(round(ret5,1))+"%/5d","bull"))
+            elif ret5<-1 and ret20<-3:score-=1;factors.append(("Weak momentum "+str(round(ret5,1))+"%/5d","bear"))
+            else:factors.append(("Moderate momentum","neutral"))
+
+        # 7. Support/Resistance proximity
+        recent_high=max(highs[-20:])
+        recent_low=min(lows[-20:])
+        range_pct=((recent_high-recent_low)/recent_low)*100 if recent_low else 0
+        dist_from_low=((ltp-recent_low)/recent_low)*100 if recent_low else 0
+        dist_from_high=((recent_high-ltp)/ltp)*100 if ltp else 0
+        if dist_from_low<1.5:score+=1;factors.append(("Near 20-day support — bounce zone","bull"))
+        elif dist_from_high<1.5:score-=1;factors.append(("Near 20-day resistance","bear"))
+        else:factors.append(("Mid-range","neutral"))
+
+        # 8. Candle pattern (last 3 days)
+        if len(closes)>=3:
+            last3_bullish=all(closes[-i]>closes[-i-1] for i in range(1,3))
+            last3_bearish=all(closes[-i]<closes[-i-1] for i in range(1,3))
+            if last3_bullish:score+=1;factors.append(("3 consecutive green candles","bull"))
+            elif last3_bearish:score-=1;factors.append(("3 consecutive red candles","bear"))
+            else:factors.append(("Mixed candles","neutral"))
+
+        # ─── CALCULATE TARGETS ──────────────────────────
+        atr20=sum(highs[i]-lows[i] for i in range(-20,0))/20 if len(highs)>=20 else (highs[-1]-lows[-1])
+        pp=(recent_high+recent_low+ltp)/3
+
+        if score>=3:
+            verdict="STRONG BUY"
+            entry=ltp
+            sl=round(max(recent_low,ltp-1.5*atr20),2)
+            t1=round(ltp+2*atr20,2)
+            t2=round(ltp+3*atr20,2)
+        elif score>=1:
+            verdict="BUY"
+            entry=ltp
+            sl=round(max(recent_low,ltp-1.5*atr20),2)
+            t1=round(ltp+1.5*atr20,2)
+            t2=round(ltp+2.5*atr20,2)
+        elif score<=-3:
+            verdict="STRONG SELL"
+            entry=ltp
+            sl=round(min(recent_high,ltp+1.5*atr20),2)
+            t1=round(ltp-2*atr20,2)
+            t2=round(ltp-3*atr20,2)
+        elif score<=-1:
+            verdict="SELL"
+            entry=ltp
+            sl=round(min(recent_high,ltp+1.5*atr20),2)
+            t1=round(ltp-1.5*atr20,2)
+            t2=round(ltp-2.5*atr20,2)
+        else:
+            verdict="HOLD"
+            entry=sl=t1=t2=0
+
+        return {
+            "symbol":symbol,"ltp":ltp,"change":day_change,
+            "volume":volume,"vol_ratio":vol_ratio,
+            "rsi":rsi_val,"ema9":ema9,"ema21":ema21,"ema50":ema50,
+            "score":score,"verdict":verdict,
+            "entry":entry,"sl":sl,"t1":t1,"t2":t2,
+            "atr":round(atr20,2),
+            "factors":factors,
+            "high_20d":recent_high,"low_20d":recent_low,
+        }
+    except Exception as e:
+        logger.error(f"Scan error {symbol}: {e}")
+        return None
+
+def run_scanner():
+    """Background scanner — runs every 5 minutes during market hours."""
+    while True:
+        try:
+            now=datetime.now()
+            # Only scan during market hours (approx IST in UTC)
+            if auth_header() and 3<=now.hour<=10:
+                if not scan_results["scanning"]:
+                    scan_results["scanning"]=True
+                    logger.info("Starting Nifty 50 scan...")
+                    picks=[]
+                    for i,sym in enumerate(NIFTY50):
+                        result=scan_stock(sym)
+                        if result:picks.append(result)
+                        # Rate limiting — 3 req/sec, we make ~2 per stock
+                        if i%3==2:time.sleep(1.2)
+
+                    # Sort by absolute score (strongest signals first)
+                    picks.sort(key=lambda x:abs(x["score"]),reverse=True)
+                    scan_results["picks"]=picks
+                    scan_results["last_scan"]=datetime.now().isoformat()
+                    scan_results["scanning"]=False
+                    logger.info(f"Scan complete: {len(picks)} stocks analyzed")
+
+                    # Send top picks to Telegram
+                    if TG_ENABLED and picks:
+                        buys=[p for p in picks if p["score"]>=3][:3]
+                        sells=[p for p in picks if p["score"]<=-3][:3]
+                        if buys or sells:
+                            msg="📊 <b>NIFTY 50 SCAN — TOP PICKS</b>\n\n"
+                            if buys:
+                                msg+="🟢 <b>TOP BUYS:</b>\n"
+                                for b in buys:
+                                    msg+=f"  • <b>{b['symbol']}</b> ₹{b['ltp']} ({b['change']:+.1f}%) Score:{b['score']}\n"
+                                    msg+=f"    Entry:₹{b['entry']} SL:₹{b['sl']} T1:₹{b['t1']}\n"
+                            if sells:
+                                msg+="\n🔴 <b>TOP SELLS:</b>\n"
+                                for s in sells:
+                                    msg+=f"  • <b>{s['symbol']}</b> ₹{s['ltp']} ({s['change']:+.1f}%) Score:{s['score']}\n"
+                                    msg+=f"    Entry:₹{s['entry']} SL:₹{s['sl']} T1:₹{s['t1']}\n"
+                            msg+=f"\n🕐 Scanned at {datetime.now().strftime('%H:%M IST')}"
+                            threading.Thread(target=send_telegram,args=(msg,),daemon=True).start()
+        except Exception as e:
+            logger.error(f"Scanner error: {e}")
+            scan_results["scanning"]=False
+        time.sleep(300) # Every 5 minutes
+
+# Start scanner thread
+threading.Thread(target=run_scanner,daemon=True).start()
+
+@app.route("/api/scanner")
+@require_login
+def scanner_api():
+    """Return latest scan results."""
+    picks=scan_results.get("picks",[])
+    buys=[p for p in picks if p["score"]>=1]
+    sells=[p for p in picks if p["score"]<=-1]
+    buys.sort(key=lambda x:x["score"],reverse=True)
+    sells.sort(key=lambda x:x["score"])
+    return jsonify({
+        "data":{
+            "top_buys":buys[:5],
+            "top_sells":sells[:5],
+            "all":picks,
+            "last_scan":scan_results.get("last_scan"),
+            "scanning":scan_results.get("scanning",False),
+            "total_scanned":len(picks),
+        }
+    })
+
+@app.route("/api/scanner/trigger",methods=["POST"])
+@require_login
+def trigger_scan():
+    """Admin can manually trigger a scan."""
+    if not session.get("is_admin"):return jsonify({"error":"Admin only"}),403
+    if scan_results.get("scanning"):return jsonify({"error":"Scan already in progress"}),400
+    def do_scan():
+        scan_results["scanning"]=True
+        picks=[]
+        for i,sym in enumerate(NIFTY50):
+            result=scan_stock(sym)
+            if result:picks.append(result)
+            if i%3==2:time.sleep(1.2)
+        picks.sort(key=lambda x:abs(x["score"]),reverse=True)
+        scan_results["picks"]=picks
+        scan_results["last_scan"]=datetime.now().isoformat()
+        scan_results["scanning"]=False
+    threading.Thread(target=do_scan,daemon=True).start()
+    return jsonify({"ok":True,"message":"Scan started"})
