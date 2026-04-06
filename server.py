@@ -377,6 +377,8 @@ NIFTY50=[
 ]
 
 scan_results={"picks":[],"last_scan":None,"scanning":False}
+# Scanner config (admin-adjustable via API)
+scanner_cfg={"enabled":False,"auto":False,"interval":10,"running_thread":False}
 
 def compute_rsi(prices,n=14):
     if len(prices)<n+1:return 50
@@ -537,92 +539,113 @@ def scan_stock(symbol):
         logger.error(f"Scan error {symbol}: {e}")
         return None
 
-def run_scanner():
-    """Background scanner — runs every 5 minutes during market hours."""
+def do_scan_work():
+    """Core scan logic — used by both auto and manual trigger."""
+    if scan_results.get("scanning"):return
+    scan_results["scanning"]=True
+    logger.info("Starting Nifty 50 scan...")
+    picks=[]
+    for i,sym in enumerate(NIFTY50):
+        result=scan_stock(sym)
+        if result:picks.append(result)
+        if i%3==2:time.sleep(1.2)
+    picks.sort(key=lambda x:abs(x["score"]),reverse=True)
+    scan_results["picks"]=picks
+    scan_results["last_scan"]=datetime.now().isoformat()
+    scan_results["scanning"]=False
+    logger.info(f"Scan complete: {len(picks)} stocks analyzed")
+
+    # Save strong picks to signal history
+    for p in picks:
+        if abs(p["score"])>=3:
+            sig_entry={
+                "type":"stock_pick",
+                "symbol":p["symbol"],"dir":"BULLISH" if p["score"]>0 else "BEARISH",
+                "verdict":p["verdict"],"score":p["score"],
+                "tradingsymbol":p["symbol"],"entryPrice":p["entry"],
+                "slPrice":p["sl"],"t1Price":p["t1"],"t2Price":p["t2"],
+                "ltp":p["ltp"],"change":p["change"],"rsi":p["rsi"],
+                "lotSize":1,"lots":1,"atr":p["atr"],
+                "time":datetime.now().strftime("%H:%M"),"id":int(time.time()*1000)+hash(p["symbol"])%1000,
+                "timestamp":datetime.now().isoformat(),"date":datetime.now().strftime("%Y-%m-%d"),
+                "outcome":"open","pnl":None,
+            }
+            # Don't duplicate — check if already in history today
+            already=any(s.get("symbol")==p["symbol"] and s.get("date")==sig_entry["date"] and s.get("type")=="stock_pick" for s in signal_history)
+            if not already:
+                signal_history.insert(0,sig_entry)
+
+    # Send top picks to Telegram
+    if TG_ENABLED and picks:
+        buys=[p for p in picks if p["score"]>=3][:3]
+        sells=[p for p in picks if p["score"]<=-3][:3]
+        if buys or sells:
+            msg="📊 <b>NIFTY 50 SCAN — TOP PICKS</b>\n\n"
+            if buys:
+                msg+="🟢 <b>TOP BUYS:</b>\n"
+                for b in buys:
+                    msg+=f"  • <b>{b['symbol']}</b> ₹{b['ltp']} ({b['change']:+.1f}%)\n"
+                    msg+=f"    Score:{b['score']} RSI:{b['rsi']}\n"
+                    msg+=f"    Entry:₹{b['entry']} SL:₹{b['sl']} T1:₹{b['t1']} T2:₹{b['t2']}\n\n"
+            if sells:
+                msg+="🔴 <b>TOP SELLS:</b>\n"
+                for s in sells:
+                    msg+=f"  • <b>{s['symbol']}</b> ₹{s['ltp']} ({s['change']:+.1f}%)\n"
+                    msg+=f"    Score:{s['score']} RSI:{s['rsi']}\n"
+                    msg+=f"    Entry:₹{s['entry']} SL:₹{s['sl']} T1:₹{s['t1']}\n\n"
+            msg+=f"🕐 {datetime.now().strftime('%H:%M IST')}"
+            threading.Thread(target=send_telegram,args=(msg,),daemon=True).start()
+
+def run_scanner_loop():
+    """Background auto-scanner — only runs when admin enables it."""
     while True:
         try:
-            now=datetime.now()
-            # Only scan during market hours (approx IST in UTC)
-            if auth_header() and 3<=now.hour<=10:
-                if not scan_results["scanning"]:
-                    scan_results["scanning"]=True
-                    logger.info("Starting Nifty 50 scan...")
-                    picks=[]
-                    for i,sym in enumerate(NIFTY50):
-                        result=scan_stock(sym)
-                        if result:picks.append(result)
-                        # Rate limiting — 3 req/sec, we make ~2 per stock
-                        if i%3==2:time.sleep(1.2)
-
-                    # Sort by absolute score (strongest signals first)
-                    picks.sort(key=lambda x:abs(x["score"]),reverse=True)
-                    scan_results["picks"]=picks
-                    scan_results["last_scan"]=datetime.now().isoformat()
-                    scan_results["scanning"]=False
-                    logger.info(f"Scan complete: {len(picks)} stocks analyzed")
-
-                    # Send top picks to Telegram
-                    if TG_ENABLED and picks:
-                        buys=[p for p in picks if p["score"]>=3][:3]
-                        sells=[p for p in picks if p["score"]<=-3][:3]
-                        if buys or sells:
-                            msg="📊 <b>NIFTY 50 SCAN — TOP PICKS</b>\n\n"
-                            if buys:
-                                msg+="🟢 <b>TOP BUYS:</b>\n"
-                                for b in buys:
-                                    msg+=f"  • <b>{b['symbol']}</b> ₹{b['ltp']} ({b['change']:+.1f}%) Score:{b['score']}\n"
-                                    msg+=f"    Entry:₹{b['entry']} SL:₹{b['sl']} T1:₹{b['t1']}\n"
-                            if sells:
-                                msg+="\n🔴 <b>TOP SELLS:</b>\n"
-                                for s in sells:
-                                    msg+=f"  • <b>{s['symbol']}</b> ₹{s['ltp']} ({s['change']:+.1f}%) Score:{s['score']}\n"
-                                    msg+=f"    Entry:₹{s['entry']} SL:₹{s['sl']} T1:₹{s['t1']}\n"
-                            msg+=f"\n🕐 Scanned at {datetime.now().strftime('%H:%M IST')}"
-                            threading.Thread(target=send_telegram,args=(msg,),daemon=True).start()
+            if scanner_cfg["enabled"] and scanner_cfg["auto"] and auth_header():
+                now=datetime.now()
+                if 3<=now.hour<=10:  # Market hours (IST in UTC)
+                    do_scan_work()
         except Exception as e:
-            logger.error(f"Scanner error: {e}")
+            logger.error(f"Scanner loop error: {e}")
             scan_results["scanning"]=False
-        time.sleep(300) # Every 5 minutes
+        time.sleep(scanner_cfg.get("interval",10)*60) # Use admin-set interval
 
-# Start scanner thread
-threading.Thread(target=run_scanner,daemon=True).start()
+# Start scanner thread (but it only scans when enabled by admin)
+threading.Thread(target=run_scanner_loop,daemon=True).start()
 
 @app.route("/api/scanner")
 @require_login
 def scanner_api():
-    """Return latest scan results."""
     picks=scan_results.get("picks",[])
     buys=[p for p in picks if p["score"]>=1]
     sells=[p for p in picks if p["score"]<=-1]
     buys.sort(key=lambda x:x["score"],reverse=True)
     sells.sort(key=lambda x:x["score"])
-    return jsonify({
-        "data":{
-            "top_buys":buys[:5],
-            "top_sells":sells[:5],
-            "all":picks,
-            "last_scan":scan_results.get("last_scan"),
-            "scanning":scan_results.get("scanning",False),
-            "total_scanned":len(picks),
-        }
-    })
+    return jsonify({"data":{
+        "top_buys":buys[:5],"top_sells":sells[:5],"all":picks,
+        "last_scan":scan_results.get("last_scan"),
+        "scanning":scan_results.get("scanning",False),
+        "total_scanned":len(picks),
+        "config":scanner_cfg,
+    }})
+
+@app.route("/api/scanner/config",methods=["GET","POST"])
+@require_login
+def scanner_config_api():
+    if not session.get("is_admin"):return jsonify({"error":"Admin only"}),403
+    if request.method=="POST":
+        d=request.get_json()
+        if "enabled" in d:scanner_cfg["enabled"]=bool(d["enabled"])
+        if "auto" in d:scanner_cfg["auto"]=bool(d["auto"])
+        if "interval" in d:scanner_cfg["interval"]=max(5,min(60,int(d["interval"])))
+        logger.info(f"Scanner config updated: {scanner_cfg}")
+        return jsonify({"ok":True,"config":scanner_cfg})
+    return jsonify({"config":scanner_cfg})
 
 @app.route("/api/scanner/trigger",methods=["POST"])
 @require_login
 def trigger_scan():
-    """Admin can manually trigger a scan."""
-    if not session.get("is_admin"):return jsonify({"error":"Admin only"}),403
-    if scan_results.get("scanning"):return jsonify({"error":"Scan already in progress"}),400
-    def do_scan():
-        scan_results["scanning"]=True
-        picks=[]
-        for i,sym in enumerate(NIFTY50):
-            result=scan_stock(sym)
-            if result:picks.append(result)
-            if i%3==2:time.sleep(1.2)
-        picks.sort(key=lambda x:abs(x["score"]),reverse=True)
-        scan_results["picks"]=picks
-        scan_results["last_scan"]=datetime.now().isoformat()
-        scan_results["scanning"]=False
-    threading.Thread(target=do_scan,daemon=True).start()
-    return jsonify({"ok":True,"message":"Scan started"})
+    if not scanner_cfg["enabled"]:return jsonify({"error":"Scanner is disabled. Enable it from Config."}),400
+    if scan_results.get("scanning"):return jsonify({"error":"Scan in progress..."}),400
+    if not auth_header():return jsonify({"error":"Kite not connected"}),503
+    threading.Thread(target=do_scan_work,daemon=True).start()
+    return jsonify({"ok":True,"message":"Scan started! Takes ~60 seconds."})

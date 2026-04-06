@@ -63,7 +63,7 @@ const B=window.location.origin;
 // ─── CONFIG (admin adjustable) ─────────────────────────────
 let CFG={
   niftyLot:65, bankniftyLot:30,
-  usePnF:true, useRenko:true,
+  usePnF:true, useRenko:true, scannerEnabled:false, scannerAuto:false, scannerInterval:10,
   renkoSize:20, pnfBoxSize:10, pnfReversal:3,
   maxSignals:2, minScore:5
 };
@@ -497,6 +497,11 @@ function render(){
     o+=cfgToggle("Point & Figure",CFG.usePnF,"CFG.usePnF=!CFG.usePnF;saveCfg();render()");
     o+=cfgInput("P&F Box Size",CFG.pnfBoxSize,"CFG.pnfBoxSize=parseInt(this.value)||10;saveCfg()");
     o+=cfgInput("P&F Reversal",CFG.pnfReversal,"CFG.pnfReversal=parseInt(this.value)||3;saveCfg()");
+    o+='<div class="ct" style="margin-top:12px">STOCK SCANNER</div>';
+    o+=cfgToggle("Scanner Enabled",CFG.scannerEnabled,"CFG.scannerEnabled=!CFG.scannerEnabled;saveCfg();fetch(B+\'/api/scanner/config\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({enabled:CFG.scannerEnabled})});render()");
+    o+=cfgToggle("Auto-Scan (timer)",CFG.scannerAuto,"CFG.scannerAuto=!CFG.scannerAuto;saveCfg();fetch(B+\'/api/scanner/config\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({auto:CFG.scannerAuto})});render()");
+    o+=cfgInput("Scan Interval (min)",CFG.scannerInterval,"CFG.scannerInterval=parseInt(this.value)||10;saveCfg();fetch(B+\'/api/scanner/config\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({interval:CFG.scannerInterval})})");
+    o+='<div style="font-size:9px;color:var(--dm);margin-top:6px;padding:6px;background:var(--sf);border-radius:4px">Auto OFF = use Run Scan button manually.<br>Auto ON = scans every N minutes.</div>';
     o+='<button class="btn" style="width:100%;margin-top:14px;color:var(--dm)" onclick="S.showConfig=false;render()">Close</button>';
     o+='</div></div>';
   }
@@ -611,7 +616,7 @@ function renderStockResults(){
         }
         if(S.isAdmin)o+='<button class="btn-sm" style="width:100%;margin-top:8px;color:var(--ac)" onclick="triggerScan()">↻ Rescan Now</button>';
       }else{
-        o+='<div style="text-align:center;padding:20px"><div style="font-size:10px;color:var(--dm)">Scanner runs every 5 min during market hours</div>';
+        o+='<div style="text-align:center;padding:20px"><div style="font-size:10px;color:var(--dm)">'+(CFG.scannerEnabled?(CFG.scannerAuto?'Auto-scan every '+CFG.scannerInterval+' min':'Manual mode'):'Scanner disabled')+'</div>';
         if(S.isAdmin)o+='<button class="btn-sm" style="margin-top:8px;color:var(--ac)" onclick="triggerScan()">▶ Run Scan Now</button>';
         o+='</div>';
       }
