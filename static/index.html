@@ -129,9 +129,9 @@ tr{border-bottom:1px solid var(--bd)}
 
 <!-- Search input for stocks (persistent, outside render) -->
 <div id="search-wrap" style="display:none;padding:12px 12px 0">
-<div style="display:flex;gap:8px">
-<input id="search-input" class="input" placeholder="Search stock (RELIANCE, TCS, INFY...)" autocomplete="off" autocorrect="off" spellcheck="false" style="flex:1">
-<button class="btn btn-primary" onclick="searchStock()" style="white-space:nowrap">Analyze</button>
+<div style="display:flex;gap:8px;align-items:center">
+<input id="search-input" class="input" placeholder="Search stock (RELIANCE, TCS, INFY...)" autocomplete="off" autocorrect="off" spellcheck="false" style="flex:1;min-width:0">
+<button class="btn btn-primary" onclick="searchStock()" style="white-space:nowrap;padding:12px 24px;flex-shrink:0">Analyze</button>
 </div>
 </div>
 
@@ -276,8 +276,8 @@ function triggerScan(){
   S.scanLoading=true;renderStockContent();
   fetch(B+"/api/scanner/trigger",{method:"POST"}).then(function(r){return r.json()}).then(function(d){
     if(d.error){alert(d.error);S.scanLoading=false;renderStockContent();return}
-    function poll(){fetch(B+"/api/scanner").then(function(r){return r.json()}).then(function(d){if(d.data&&!d.data.scanning){S.scanData=d.data;S.scanLoading=false;renderStockContent()}else setTimeout(poll,5e3)})}
-    setTimeout(poll,5e3);
+    function poll(){fetch(B+"/api/scanner").then(function(r){return r.json()}).then(function(d){if(d.data&&!d.data.scanning){S.scanData=d.data;S.scanLoading=false;renderStockContent()}else{S.scanLoading=true;renderStockContent();setTimeout(poll,8e3)}})}
+    setTimeout(poll,8e3);
   }).catch(function(){S.scanLoading=false;renderStockContent()});
 }
 function searchStock(){
@@ -388,11 +388,11 @@ function renderMain(){
     o+=metric("Trend",a.st.t==="BULL"?"Bullish":"Bearish",fmt(a.st.v),a.st.t==="BULL");
     o+='</div></div>';
 
-    o+='<div class="card"><div class="card-title">Recommended Options</div>';
+    if(S.isAdmin){o+='<div class="card"><div class="card-title">Recommended Options</div>';
     if(S.recCE)o+='<div class="pick" style="border-left-color:var(--gn)"><div style="display:flex;justify-content:space-between"><div><div style="font-size:9px;color:var(--gn);font-weight:700">BULLISH</div><div style="font-size:13px;font-weight:700;margin-top:2px">'+S.recCE.tradingsymbol+'</div></div><div style="text-align:right;font-size:10px;color:var(--dm)">₹'+S.recCE.ltp+'<br>OI:'+fmt(S.recCE.oi)+'</div></div></div>';
     if(S.recPE)o+='<div class="pick" style="border-left-color:var(--rd)"><div style="display:flex;justify-content:space-between"><div><div style="font-size:9px;color:var(--rd);font-weight:700">BEARISH</div><div style="font-size:13px;font-weight:700;margin-top:2px">'+S.recPE.tradingsymbol+'</div></div><div style="text-align:right;font-size:10px;color:var(--dm)">₹'+S.recPE.ltp+'<br>OI:'+fmt(S.recPE.oi)+'</div></div></div>';
     if(!S.recCE&&!S.recPE)o+='<div style="text-align:center;padding:20px;color:var(--dm);font-size:11px">'+(S.mode==="live"?"Loading...":"Connect Kite")+'</div>';
-    o+='</div>';
+    o+='</div>';}
 
     // Factors (admin only)
     if(S.isAdmin){o+='<div class="card" style="grid-column:1/-1"><div class="card-title">Analysis ('+((S.result?S.result.reasons:[])||[]).length+' factors)</div>';
@@ -555,10 +555,10 @@ function renderStockContent(){
           o+='<div style="text-align:right"><div style="font-size:12px;font-weight:700;color:var(--rd)">'+p.verdict+'</div></div></div></div>';
         });
       }
-      o+='<button class="btn btn-sm" style="width:100%;margin-top:10px" onclick="triggerScan()">↻ Rescan</button>';
+      o+='<button class="btn btn-sm" style="width:100%;margin-top:10px" onclick="triggerScan()">↻ Run Scan</button>';
     }else{
       if(!CFG.scanEnabled){o+='<div style="text-align:center;padding:24px"><div style="color:var(--yl);font-size:11px">Scanner disabled</div><div style="font-size:10px;color:var(--dm);margin-top:4px">'+(S.isAdmin?"Enable from ⚙ Config":"Ask admin to enable")+'</div></div>'}
-      else{o+='<div style="text-align:center;padding:24px"><div style="color:var(--dm);font-size:11px">'+(CFG.scanAuto?"Auto-scan every "+CFG.scanInterval+" min":"Manual mode")+'</div>';o+='<button class="btn btn-sm" style="margin-top:8px" onclick="triggerScan()">▶ Run Scan</button></div>'}
+      else{o+='<div style="text-align:center;padding:24px"><div style="color:var(--dm);font-size:11px">'+(CFG.scanAuto?"Auto-scan every "+CFG.scanInterval+" min":"Manual mode")+'</div>';o+='<button class="btn btn-sm" style="margin-top:8px" onclick="triggerScan()">▶ Run Scan Now</button></div>'}
     }
     o+='</div>';
     o+='<div style="text-align:center;color:var(--dm);font-size:10px;margin:8px 0">— or search any stock above —</div>';

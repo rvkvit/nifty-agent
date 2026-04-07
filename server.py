@@ -476,11 +476,11 @@ def scan_cfg():
 @app.route("/api/scanner/trigger",methods=["POST"])
 @require_auth
 def scan_trigger():
-    if not scanner_cfg["enabled"]:return jsonify({"error":"Scanner disabled"}),400
-    if scan_results["scanning"]:return jsonify({"error":"Already scanning"}),400
-    if not get_kite_auth():return jsonify({"error":"Kite not connected"}),503
+    if not scanner_cfg["enabled"]:return jsonify({"error":"Scanner is disabled. Ask admin to enable it from Configuration."}),400
+    if scan_results["scanning"]:return jsonify({"error":"Scan already in progress. Please wait ~60 seconds."}),400
+    if not get_kite_auth():return jsonify({"error":"Kite not connected. Admin needs to login first."}),503
     threading.Thread(target=do_scan,daemon=True).start()
-    return jsonify({"ok":True,"message":"Scan started (~60s)"})
+    return jsonify({"ok":True,"message":"Scanning 50 stocks... Results in ~60 seconds."})
 
 @app.route("/api/admin/disconnect",methods=["POST"])
 @require_auth
