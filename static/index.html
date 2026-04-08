@@ -367,12 +367,31 @@ function doTick(){
 }
 
 // ─── RENDER ────────────────────────────────────────────────
+function goToStock(sym){
+  document.getElementById("search-input").value=sym;
+  switchTab("stock");
+  setTimeout(function(){searchStock()},200);
+}
+function doScan(){
+  S.scanLoading=true;render();
+  fetch(B+"/api/scanner/trigger",{method:"POST"}).then(function(r){return r.json()}).then(function(d){
+    if(d.error){alert(d.error);S.scanLoading=false;render();return}
+    function poll(){
+      fetch(B+"/api/scanner").then(function(r){return r.json()}).then(function(d){
+        if(d.data&&!d.data.scanning){S.scanData=d.data;S.scanLoading=false;render()}
+        else setTimeout(poll,6000);
+      }).catch(function(){S.scanLoading=false;render()});
+    }
+    setTimeout(poll,6000);
+  }).catch(function(e){alert("Scan failed: "+e.message);S.scanLoading=false;render()});
+}
 function switchTab(t){
   S.tab=t;localStorage.setItem("na5tab",t);
   document.getElementById("search-wrap").style.display=t==="stock"?"block":"none";
   render();
   if(t==="signals")loadHistory();
-  if(t==="stock"){loadScan();setTimeout(function(){var inp=document.getElementById("search-input");if(inp)inp.focus()},150)}
+  if(t==="scanner"){loadScan()}
+  if(t==="stock"){setTimeout(function(){var inp=document.getElementById("search-input");if(inp)inp.focus()},150)}
 }
 
 function renderTicker(){
@@ -400,14 +419,14 @@ function renderTicker(){
   o+='<div style="display:flex;flex-direction:column;justify-content:center;gap:3px;padding:0 4px">';
   o+='<span class="pill" style="background:'+mc+'15;color:'+mc+';border:1px solid '+mc+'30;font-size:8px">'+(S.mode==="live"?"LIVE":"MOCK")+'</span>';
   o+='<span class="pill" style="background:var(--ac)15;color:var(--ac);border:1px solid #00e5ff30;font-size:8px">'+S.todaySignals.length+'/'+CFG.maxSig+'</span>';
-  if(S.isAdmin)o+='<span class="pill" style="background:var(--or)15;color:var(--or);border:1px solid #ff910030;font-size:8px;cursor:pointer" onclick="event.stopPropagation();S.showModal=\'admin\';render()">ADM</span>';
+  
   o+='</div>';
 
   document.getElementById("ticker").innerHTML=o;
 }
 
 function renderNav(){
-  var tabs=[["dashboard","📊","Signals"],["signals","📋","History"],["chain","⛓","Chain"],["stock","🔍","Stocks"],["rules","📖",S.isAdmin?"Admin":"Guide"]];
+  var tabs=[["dashboard","📊","Signals"],["signals","📋","History"],["chain","⛓","Chain"],["stock","🔍","Stocks"],["scanner","📡","Scanner"],["rules","📖",S.isAdmin?"Admin":"Guide"]];
   var o="";tabs.forEach(function(t){
     o+='<button class="nav-btn'+(S.tab===t[0]?" active":"")+'" onclick="switchTab(\''+t[0]+'\')"><span class="nav-icon">'+t[1]+'</span>'+t[2]+'</button>';
   });
@@ -537,7 +556,61 @@ function renderMain(){
     o+='<div class="tv-chart" id="tv-idx"></div></div>';
   }
 
-  // ═══ RULES ═══
+  // ═══ SCANNER ═══
+  if(S.tab==="scanner"){
+    o+='<div class="card"><div class="card-title">📡 Nifty 50 Stock Scanner</div>';
+    if(!CFG.scanEnabled){
+      o+='<div style="text-align:center;padding:30px"><div style="font-size:24px;margin-bottom:8px">⚠️</div>';
+      o+='<div style="color:var(--yl);font-size:12px">Scanner is disabled</div>';
+      o+='<div style="color:var(--dm);font-size:10px;margin-top:6px">'+(S.isAdmin?"Enable from Admin tab → Configuration":"Ask admin to enable the scanner")+'</div></div>';
+    }else if(S.scanLoading){
+      o+='<div style="text-align:center;padding:30px"><div style="font-size:24px;margin-bottom:8px">⏳</div>';
+      o+='<div style="color:var(--ac);font-size:12px">Scanning 50 stocks...</div>';
+      o+='<div style="color:var(--dm);font-size:10px;margin-top:6px">This takes about 60 seconds</div></div>';
+    }else if(S.scanData&&S.scanData.top_buys&&(S.scanData.top_buys.length||S.scanData.top_sells.length)){
+      o+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">';
+      o+='<div style="font-size:10px;color:var(--dm)">'+S.scanData.total+' stocks · '+(S.scanData.last_scan?new Date(S.scanData.last_scan).toLocaleTimeString("en-IN"):"")+'</div>';
+      o+='<button class="btn btn-sm" onclick="doScan()">↻ Rescan</button></div>';
+      if(S.scanData.top_buys.length){
+        o+='<div style="font-size:11px;color:var(--gn);font-weight:700;margin-bottom:8px">🟢 TOP BUYS</div>';
+        S.scanData.top_buys.forEach(function(p){
+          o+='<div class="pick" style="border-left-color:var(--gn)" onclick="goToStock(\''+p.symbol+'\')">';
+          o+='<div style="display:flex;justify-content:space-between;align-items:center">';
+          o+='<div><div style="font-size:14px;font-weight:700">'+p.symbol+'</div>';
+          o+='<div style="font-size:11px;color:var(--dm)">₹'+fmt(p.ltp)+' <span style="color:'+(p.change>=0?"var(--gn)":"var(--rd)")+'">'+(p.change>=0?"+":"")+p.change+'%</span></div></div>';
+          o+='<div style="text-align:right"><div style="font-size:12px;font-weight:700;color:var(--gn)">'+p.verdict+'</div>';
+          o+='<div style="font-size:9px;color:var(--dm)">Score:'+p.score+' RSI:'+p.rsi+'</div></div></div>';
+          o+='<div style="display:flex;gap:12px;margin-top:6px;font-size:10px;color:var(--dm)">';
+          o+='<span>Entry: <b style="color:var(--tx)">₹'+fmt(p.entry)+'</b></span>';
+          o+='<span>SL: <b style="color:var(--rd)">₹'+fmt(p.sl)+'</b></span>';
+          o+='<span>T1: <b style="color:var(--gn)">₹'+fmt(p.t1)+'</b></span>';
+          o+='<span>T2: <b style="color:var(--gn)">₹'+fmt(p.t2)+'</b></span></div></div>';
+        });
+      }
+      if(S.scanData.top_sells&&S.scanData.top_sells.length){
+        o+='<div style="font-size:11px;color:var(--rd);font-weight:700;margin:16px 0 8px">🔴 TOP SELLS</div>';
+        S.scanData.top_sells.forEach(function(p){
+          o+='<div class="pick" style="border-left-color:var(--rd)" onclick="goToStock(\''+p.symbol+'\')">';
+          o+='<div style="display:flex;justify-content:space-between;align-items:center">';
+          o+='<div><div style="font-size:14px;font-weight:700">'+p.symbol+'</div>';
+          o+='<div style="font-size:11px;color:var(--dm)">₹'+fmt(p.ltp)+' <span style="color:var(--rd)">'+(p.change>=0?"+":"")+p.change+'%</span></div></div>';
+          o+='<div style="text-align:right"><div style="font-size:12px;font-weight:700;color:var(--rd)">'+p.verdict+'</div>';
+          o+='<div style="font-size:9px;color:var(--dm)">Score:'+p.score+'</div></div></div>';
+          o+='<div style="display:flex;gap:12px;margin-top:6px;font-size:10px;color:var(--dm)">';
+          o+='<span>SL: <b style="color:var(--rd)">₹'+fmt(p.sl)+'</b></span>';
+          o+='<span>T1: <b style="color:var(--gn)">₹'+fmt(p.t1)+'</b></span></div></div>';
+        });
+      }
+    }else{
+      o+='<div style="text-align:center;padding:30px">';
+      o+='<div style="font-size:24px;margin-bottom:8px">📡</div>';
+      o+='<div style="color:var(--t2);font-size:12px">'+(CFG.scanAuto?"Auto-scan every "+CFG.scanInterval+" min":"Click below to scan")+'</div>';
+      o+='<button class="btn" style="margin-top:12px" onclick="doScan()">▶ Run Scan Now</button></div>';
+    }
+    o+='</div>';
+  }
+
+    // ═══ RULES ═══
   if(S.tab==="rules"){
     if(S.isAdmin){
       o+='<div class="card" style="border-color:#ff910030"><div class="card-title" style="color:var(--or)">Admin Controls</div>';
@@ -608,46 +681,11 @@ function renderStockContent(){
   var el=document.getElementById("main");if(!el)return;
   var o="";
 
-  // Scanner section
-  if(!S.stockData){
-    o+='<div class="card"><div class="card-title">📊 Nifty 50 Scanner</div>';
-    if(S.scanLoading){o+='<div style="text-align:center;padding:24px;color:var(--dm)">Scanning 50 stocks...</div>'}
-    else if(S.scanData&&S.scanData.top_buys&&S.scanData.top_buys.length){
-      o+='<div style="font-size:10px;color:var(--dm);margin-bottom:10px">Scanned '+S.scanData.total+' stocks · '+(S.scanData.last_scan?new Date(S.scanData.last_scan).toLocaleTimeString("en-IN"):"")+'</div>';
-      if(S.scanData.top_buys.length){
-        o+='<div style="font-size:10px;color:var(--gn);font-weight:700;margin-bottom:6px">TOP BUYS</div>';
-        S.scanData.top_buys.forEach(function(p){
-          o+='<div class="pick" style="border-left-color:var(--gn)" onclick="document.getElementById(\'search-input\').value=\''+p.symbol+'\';searchStock()">';
-          o+='<div style="display:flex;justify-content:space-between;align-items:center">';
-          o+='<div><div style="font-size:13px;font-weight:700">'+p.symbol+'</div><div style="font-size:10px;color:var(--dm)">₹'+fmt(p.ltp)+' <span style="color:'+(p.change>=0?"var(--gn)":"var(--rd)")+'">'+(p.change>=0?"+":"")+p.change+'%</span></div></div>';
-          o+='<div style="text-align:right"><div style="font-size:12px;font-weight:700;color:var(--gn)">'+p.verdict+'</div><div style="font-size:9px;color:var(--dm)">Sc:'+p.score+' RSI:'+p.rsi+'</div></div></div>';
-          o+='<div style="font-size:9px;color:var(--dm);margin-top:4px">SL ₹'+fmt(p.sl)+' · T1 ₹'+fmt(p.t1)+' · T2 ₹'+fmt(p.t2)+'</div></div>';
-        });
-      }
-      if(S.scanData.top_sells&&S.scanData.top_sells.length){
-        o+='<div style="font-size:10px;color:var(--rd);font-weight:700;margin:12px 0 6px">TOP SELLS</div>';
-        S.scanData.top_sells.forEach(function(p){
-          o+='<div class="pick" style="border-left-color:var(--rd)" onclick="document.getElementById(\'search-input\').value=\''+p.symbol+'\';searchStock()">';
-          o+='<div style="display:flex;justify-content:space-between;align-items:center">';
-          o+='<div><div style="font-size:13px;font-weight:700">'+p.symbol+'</div><div style="font-size:10px;color:var(--dm)">₹'+fmt(p.ltp)+' <span style="color:var(--rd)">'+(p.change>=0?"+":"")+p.change+'%</span></div></div>';
-          o+='<div style="text-align:right"><div style="font-size:12px;font-weight:700;color:var(--rd)">'+p.verdict+'</div></div></div></div>';
-        });
-      }
-      o+='<button class="btn btn-sm" style="width:100%;margin-top:10px" onclick="triggerScan()">↻ Run Scan</button>';
-    }else{
-      if(!CFG.scanEnabled){o+='<div style="text-align:center;padding:24px"><div style="color:var(--yl);font-size:11px">Scanner disabled</div><div style="font-size:10px;color:var(--dm);margin-top:4px">'+(S.isAdmin?"Enable from ⚙ Config":"Ask admin to enable")+'</div></div>'}
-      else{o+='<div style="text-align:center;padding:24px"><div style="color:var(--dm);font-size:11px">'+(CFG.scanAuto?"Auto-scan every "+CFG.scanInterval+" min":"Manual mode")+'</div>';o+='<button class="btn btn-sm" style="margin-top:8px" onclick="triggerScan()">▶ Run Scan Now</button></div>'}
-    }
-    o+='</div>';
-    o+='<div style="text-align:center;color:var(--dm);font-size:10px;margin:8px 0">— or search any stock above —</div>';
-  }
-
-  // Stock analysis result
   if(S.stockLoading){o+='<div style="text-align:center;padding:40px;color:var(--dm)">Analyzing...</div>'}
   else if(S.stockData){
     var sd=S.stockData;
     // Back button
-    o+='<button class="btn btn-sm" style="margin-bottom:12px" onclick="S.stockData=null;renderStockContent()">← Back to Scanner</button>';
+    o+='<button class="btn btn-sm" style="margin-bottom:12px" onclick="S.stockData=null;renderStockContent()">← Clear Search</button>';
 
     o+='<div class="card"><div style="display:flex;justify-content:space-between;align-items:center">';
     o+='<div><div style="font-size:18px;font-weight:700">'+sd.symbol+'</div>';
