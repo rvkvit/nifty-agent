@@ -172,6 +172,73 @@ function stCalc(p){if(p.length<10)return{v:p[p.length-1],t:"BULL"};var a=0;for(v
 function pivCalc(h,l,c){var pp=+((h+l+c)/3).toFixed(2);return{r2:+(pp+(h-l)).toFixed(2),r1:+(2*pp-l).toFixed(2),pp:pp,s1:+(2*pp-h).toFixed(2),s2:+(pp-(h-l)).toFixed(2)}}
 var fmt=function(n){return typeof n==="number"?n.toLocaleString("en-IN",{maximumFractionDigits:2}):n||""};
 
+
+// ─── RENKO CHART ───────────────────────────────────────────
+function buildRenko(closes,brickSize){
+  if(!closes||closes.length<2)return{bricks:[],trend:"NEUTRAL",signal:0};
+  var bs=brickSize||20,bricks=[],base=Math.floor(closes[0]/bs)*bs,dir=0;
+  for(var i=1;i<closes.length;i++){var p=closes[i];
+    while(p>=base+bs*2&&dir>=0){base+=bs;bricks.push({o:base-bs,c:base,type:"up"});dir=1}
+    while(p>=base+bs&&dir<=0){base+=bs;bricks.push({o:base-bs,c:base,type:"up"});dir=1}
+    while(p<=base-bs*2&&dir<=0){base-=bs;bricks.push({o:base+bs,c:base,type:"down"});dir=-1}
+    while(p<=base-bs&&dir>=0){base-=bs;bricks.push({o:base+bs,c:base,type:"down"});dir=-1}
+  }
+  if(!bricks.length)return{bricks:bricks,trend:"NEUTRAL",signal:0};
+  var last5=bricks.slice(-5),ups=last5.filter(function(b){return b.type==="up"}).length;
+  var trend=ups>=4?"STRONG UP":ups>=3?"UP":ups<=1?"STRONG DOWN":ups<=2?"DOWN":"NEUTRAL";
+  var signal=ups>=4?2:ups>=3?1:ups<=1?-2:ups<=2?-1:0;
+  return{bricks:bricks.slice(-40),trend:trend,signal:signal};
+}
+function renkoSVG(bricks,w,h){
+  if(!bricks.length)return"<div style=\"text-align:center;padding:15px;color:var(--dm);font-size:10px\">No data</div>";
+  w=w||280;h=h||100;
+  var prices=[];bricks.forEach(function(b){prices.push(b.o,b.c)});
+  var mn=Math.min.apply(null,prices),mx=Math.max.apply(null,prices),rng=mx-mn||1;
+  var pad=32,bw=Math.min(12,Math.max(4,(w-pad-10)/bricks.length)),ch=h-16;
+  var svg="<svg width=\""+w+"\" height=\""+h+"\" style=\"display:block\">";
+  for(var g=0;g<4;g++){var gy=6+g*ch/3;var gp=(mx-(g/3)*rng).toFixed(0);svg+="<line x1=\""+pad+"\" y1=\""+gy+"\" x2=\""+w+"\" y2=\""+gy+"\" stroke=\"#1a274430\" stroke-width=\"0.5\"/>";svg+="<text x=\"2\" y=\""+(gy+3)+"\" fill=\"#5a6a8a\" font-size=\"7\" font-family=\"monospace\">"+gp+"</text>"}
+  bricks.forEach(function(b,i){var x=pad+i*(bw+1);var yT=6+(mx-Math.max(b.o,b.c))/rng*ch;var yB=6+(mx-Math.min(b.o,b.c))/rng*ch;var bh=Math.max(3,yB-yT);var cl=b.type==="up"?"#00e676":"#ff1744";svg+="<rect x=\""+x+"\" y=\""+yT+"\" width=\""+bw+"\" height=\""+bh+"\" fill=\""+cl+"\" rx=\"2\" stroke=\""+(b.type==="up"?"#00c853":"#d50000")+"\" stroke-width=\"0.5\"/>"});
+  svg+="</svg>";return svg;
+}
+
+// ─── POINT & FIGURE ────────────────────────────────────────
+function buildPnF(closes,boxSize,reversal){
+  if(!closes||closes.length<5)return{columns:[],trend:"NEUTRAL",signal:0};
+  var box=boxSize||10,rev=reversal||3,columns=[],curCol={type:"X",boxes:[]};
+  var curHigh=Math.floor(closes[0]/box)*box,curLow=curHigh;
+  curCol.boxes.push(curHigh);
+  for(var i=1;i<closes.length;i++){var p=closes[i];
+    if(curCol.type==="X"){
+      if(p>=curHigh+box){while(curHigh+box<=p){curHigh+=box;curCol.boxes.push(curHigh)}}
+      else if(p<=curHigh-rev*box){columns.push({type:curCol.type,boxes:curCol.boxes.slice()});curCol={type:"O",boxes:[]};curLow=curHigh-box;for(var b=curLow;b>=p;b-=box){curCol.boxes.push(b);curLow=b}}
+    }else{
+      if(p<=curLow-box){while(curLow-box>=p){curLow-=box;curCol.boxes.push(curLow)}}
+      else if(p>=curLow+rev*box){columns.push({type:curCol.type,boxes:curCol.boxes.slice()});curCol={type:"X",boxes:[]};curHigh=curLow+box;for(var b2=curHigh;b2<=p;b2+=box){curCol.boxes.push(b2);curHigh=b2}}
+    }
+  }
+  if(curCol.boxes.length)columns.push({type:curCol.type,boxes:curCol.boxes.slice()});
+  var cols=columns.slice(-20);if(!cols.length)return{columns:cols,trend:"NEUTRAL",signal:0};
+  var lastCol=cols[cols.length-1],signal=0;
+  if(lastCol.type==="X"){var prevX=cols.filter(function(c2){return c2.type==="X"}).slice(-2);if(prevX.length>=2&&Math.max.apply(null,prevX[1].boxes)>Math.max.apply(null,prevX[0].boxes))signal=1}
+  if(lastCol.type==="O"){var prevO=cols.filter(function(c2){return c2.type==="O"}).slice(-2);if(prevO.length>=2&&Math.min.apply(null,prevO[1].boxes)<Math.min.apply(null,prevO[0].boxes))signal=-1}
+  var trend=lastCol.type==="X"&&signal>0?"BULLISH BREAKOUT":lastCol.type==="O"&&signal<0?"BEARISH BREAKDOWN":lastCol.type==="X"?"UP COLUMN":"DOWN COLUMN";
+  return{columns:cols,trend:trend,signal:signal};
+}
+function pnfSVG(columns,w,h){
+  if(!columns.length)return"<div style=\"text-align:center;padding:15px;color:var(--dm);font-size:10px\">No data</div>";
+  w=w||280;h=h||100;
+  var allBoxes=[];columns.forEach(function(c2){allBoxes=allBoxes.concat(c2.boxes)});
+  var mn=Math.min.apply(null,allBoxes),mx=Math.max.apply(null,allBoxes),rng=mx-mn||1;
+  var pad=32,cw=Math.min(14,Math.max(7,(w-pad-10)/columns.length)),ch=h-16;
+  var svg="<svg width=\""+w+"\" height=\""+h+"\" style=\"display:block\">";
+  for(var g=0;g<4;g++){var gy=6+g*ch/3;svg+="<line x1=\""+pad+"\" y1=\""+gy+"\" x2=\""+w+"\" y2=\""+gy+"\" stroke=\"#1a274430\" stroke-width=\"0.5\"/>"}
+  columns.forEach(function(col,ci){var x=pad+ci*(cw+2);col.boxes.forEach(function(bx){var y=6+(mx-bx)/rng*ch;var sz=Math.max(5,cw-2);
+    if(col.type==="X"){svg+="<line x1=\""+x+"\" y1=\""+y+"\" x2=\""+(x+sz)+"\" y2=\""+(y+sz)+"\" stroke=\"#00e676\" stroke-width=\"2\" stroke-linecap=\"round\"/>";svg+="<line x1=\""+(x+sz)+"\" y1=\""+y+"\" x2=\""+x+"\" y2=\""+(y+sz)+"\" stroke=\"#00e676\" stroke-width=\"2\" stroke-linecap=\"round\"/>"}
+    else{svg+="<circle cx=\""+(x+sz/2)+"\" cy=\""+(y+sz/2)+"\" r=\""+(sz/2-1)+"\" fill=\"none\" stroke=\"#ff1744\" stroke-width=\"2\"/>"}
+  })});
+  svg+="</svg>";return svg;
+}
+
 // ─── SIGNAL ENGINE ─────────────────────────────────────────
 function runAnalysis(){
   var spot=S.idx==="NIFTY"?S.nSpot:S.bSpot,hist=S.idx==="NIFTY"?S.nHist:S.bHist;
@@ -208,6 +275,10 @@ function runAnalysis(){
   var nr=[pv.r1,pv.r2].find(function(r){return Math.abs(spot-r)<25});
   if(ns){sc+=1;R.push({t:"At support "+ns,d:"bull",w:1})}
   if(nr){sc-=1;R.push({t:"At resistance "+nr,d:"bear",w:1})}
+  // Renko signal
+  if(CFG.useRenko&&hist.length>20){var rk=buildRenko(hist,CFG.renkoSize);if(rk.signal!==0){sc+=rk.signal;R.push({t:"Renko: "+rk.trend,d:rk.signal>0?"bull":"bear",w:Math.abs(rk.signal)})}else{R.push({t:"Renko: "+rk.trend,d:"neut",w:0})}}
+  // P&F signal
+  if(CFG.usePnF&&hist.length>20){var pf=buildPnF(hist,CFG.pnfBox,CFG.pnfRev);if(pf.signal!==0){sc+=pf.signal;R.push({t:"P&F: "+pf.trend,d:pf.signal>0?"bull":"bear",w:1})}else{R.push({t:"P&F: "+pf.trend,d:"neut",w:0})}}
   var a={pcr:_pcr,mp:_mp,vwap:_vwap,rsi:_rsi,e9:e9,e21:e21,st:_st,pv:pv,hi:hi,lo:lo};
   var lot=S.idx==="NIFTY"?CFG.niftyLot:CFG.bnfLot,mr=S.capital*.02,sig=null;
   var now=new Date(),hr=now.getHours(),mn=now.getMinutes();
@@ -278,7 +349,7 @@ function triggerScan(){
     if(d.error){alert(d.error);S.scanLoading=false;renderStockContent();return}
     function poll(){fetch(B+"/api/scanner").then(function(r){return r.json()}).then(function(d){if(d.data&&!d.data.scanning){S.scanData=d.data;S.scanLoading=false;renderStockContent()}else{S.scanLoading=true;renderStockContent();setTimeout(poll,8e3)}})}
     setTimeout(poll,8e3);
-  }).catch(function(){S.scanLoading=false;renderStockContent()});
+  }).catch(function(e){console.error("Scan error:",e);S.scanLoading=false;alert("Scan failed. Check if Kite is connected.");renderStockContent()});
 }
 function searchStock(){
   var v=document.getElementById("search-input").value.trim();if(!v)return;
@@ -329,7 +400,7 @@ function renderTicker(){
   o+='<div style="display:flex;flex-direction:column;justify-content:center;gap:3px;padding:0 4px">';
   o+='<span class="pill" style="background:'+mc+'15;color:'+mc+';border:1px solid '+mc+'30;font-size:8px">'+(S.mode==="live"?"LIVE":"MOCK")+'</span>';
   o+='<span class="pill" style="background:var(--ac)15;color:var(--ac);border:1px solid #00e5ff30;font-size:8px">'+S.todaySignals.length+'/'+CFG.maxSig+'</span>';
-  if(S.isAdmin)o+='<span class="pill" style="background:var(--or)15;color:var(--or);border:1px solid #ff910030;font-size:8px;cursor:pointer" onclick="S.showModal=\'admin\';render()">⚙</span>';
+  if(S.isAdmin)o+='<span class="pill" style="background:var(--or)15;color:var(--or);border:1px solid #ff910030;font-size:8px;cursor:pointer" onclick="event.stopPropagation();S.showModal=\'admin\';render()">ADM</span>';
   o+='</div>';
 
   document.getElementById("ticker").innerHTML=o;
@@ -393,6 +464,13 @@ function renderMain(){
     if(S.recPE)o+='<div class="pick" style="border-left-color:var(--rd)"><div style="display:flex;justify-content:space-between"><div><div style="font-size:9px;color:var(--rd);font-weight:700">BEARISH</div><div style="font-size:13px;font-weight:700;margin-top:2px">'+S.recPE.tradingsymbol+'</div></div><div style="text-align:right;font-size:10px;color:var(--dm)">₹'+S.recPE.ltp+'<br>OI:'+fmt(S.recPE.oi)+'</div></div></div>';
     if(!S.recCE&&!S.recPE)o+='<div style="text-align:center;padding:20px;color:var(--dm);font-size:11px">'+(S.mode==="live"?"Loading...":"Connect Kite")+'</div>';
     o+='</div>';}
+
+    // Renko & P&F charts on dashboard
+    var dhist=S.idx==="NIFTY"?S.nHist:S.bHist;
+    if(CFG.useRenko&&dhist.length>20){var drk=buildRenko(dhist,CFG.renkoSize);
+      o+='<div class="card"><div class="card-title">Renko · '+drk.trend+'</div>'+renkoSVG(drk.bricks,320,110)+'</div>';}
+    if(CFG.usePnF&&dhist.length>20){var dpf=buildPnF(dhist,CFG.pnfBox,CFG.pnfRev);
+      o+='<div class="card"><div class="card-title">Point & Figure · '+dpf.trend+'</div>'+pnfSVG(dpf.columns,320,110)+'</div>';}
 
     // Factors (admin only)
     if(S.isAdmin){o+='<div class="card" style="grid-column:1/-1"><div class="card-title">Analysis ('+((S.result?S.result.reasons:[])||[]).length+' factors)</div>';
