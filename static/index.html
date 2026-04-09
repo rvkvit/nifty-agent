@@ -559,11 +559,7 @@ function renderMain(){
   // ═══ SCANNER ═══
   if(S.tab==="scanner"){
     o+='<div class="card"><div class="card-title">📡 Nifty 50 Stock Scanner</div>';
-    if(!CFG.scanEnabled){
-      o+='<div style="text-align:center;padding:30px"><div style="font-size:24px;margin-bottom:8px">⚠️</div>';
-      o+='<div style="color:var(--yl);font-size:12px">Scanner is disabled</div>';
-      o+='<div style="color:var(--dm);font-size:10px;margin-top:6px">'+(S.isAdmin?"Enable from Admin tab → Configuration":"Ask admin to enable the scanner")+'</div></div>';
-    }else if(S.scanLoading){
+    if(S.scanLoading){
       o+='<div style="text-align:center;padding:30px"><div style="font-size:24px;margin-bottom:8px">⏳</div>';
       o+='<div style="color:var(--ac);font-size:12px">Scanning 50 stocks...</div>';
       o+='<div style="color:var(--dm);font-size:10px;margin-top:6px">This takes about 60 seconds</div></div>';
@@ -608,7 +604,7 @@ function renderMain(){
     }else{
       o+='<div style="text-align:center;padding:30px">';
       o+='<div style="font-size:24px;margin-bottom:8px">📡</div>';
-      o+='<div style="color:var(--t2);font-size:12px">'+(CFG.scanAuto?"Auto-scan every "+CFG.scanInterval+" min":"Click below to scan")+'</div>';
+      o+='<div style="color:var(--t2);font-size:12px">Scan all Nifty 50 stocks for buy/sell signals</div>';
       o+='<button class="btn" style="margin-top:12px" onclick="doScan()">▶ Run Scan Now</button></div>';
     }
     o+='</div>';

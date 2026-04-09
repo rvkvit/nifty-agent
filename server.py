@@ -67,8 +67,8 @@ def get_kite_auth():
         return {"X-Kite-Version":"3","Authorization":f"token {ADMIN_API_KEY}:{admin_state['token']}"}
     return None
 
-def kite_get(ep,params=None):
-    h=get_kite_auth()
+def kite_get(ep,params=None,auth_override=None):
+    h=auth_override or get_kite_auth()
     if not h:return {"error":"Not connected to Kite"}
     try:
         r=rq.get(f"{KITE}{ep}",headers=h,params=params,timeout=15)
@@ -197,10 +197,10 @@ def rsi_calc(p,n=14):
         else:l-=d
     return 100 if l==0 else round(100-100/(1+g/n/(l/n)),1)
 
-def scan_one(sym):
+def scan_one(sym,auth=None):
     try:
         s=f"NSE:{sym}"
-        q=kite_get("/quote",params=[("i",s)])
+        q=kite_get("/quote",params=[("i",s)],auth_override=auth)
         if "error" in q:return None
         qd=q.get("data",{}).get(s)
         if not qd or not qd.get("last_price"):return None
@@ -209,7 +209,7 @@ def scan_one(sym):
         tok=qd.get("instrument_token")
         if not tok:return None
         today=datetime.now()
-        h=kite_get(f"/instruments/historical/{tok}/day",params={"from":(today-timedelta(days=90)).strftime("%Y-%m-%d"),"to":today.strftime("%Y-%m-%d"),"oi":"0"})
+        h=kite_get(f"/instruments/historical/{tok}/day",auth_override=auth,params={"from":(today-timedelta(days=90)).strftime("%Y-%m-%d"),"to":today.strftime("%Y-%m-%d"),"oi":"0"})
         candles=h.get("data",{}).get("candles",[]) if "data" in h else []
         if len(candles)<20:return None
         cl=[c[4] for c in candles];hi=[c[2] for c in candles];lo=[c[3] for c in candles];vols=[c[5] for c in candles]
@@ -250,12 +250,17 @@ def scan_one(sym):
     except Exception as e:
         log.error(f"Scan {sym}: {e}");return None
 
-def do_scan():
+def do_scan(auth=None):
     if scan_results["scanning"]:return
+    # If no auth passed, try to get from admin state
+    if not auth and admin_state["token"]:
+        auth={"X-Kite-Version":"3","Authorization":f"token {ADMIN_API_KEY}:{admin_state['token']}"}
+    if not auth:
+        log.error("Scan aborted: no auth available");scan_results["scanning"]=False;return
     scan_results["scanning"]=True;log.info("Scanning Nifty 50...")
     picks=[]
     for i,sym in enumerate(NIFTY50):
-        r=scan_one(sym)
+        r=scan_one(sym,auth)
         if r:picks.append(r)
         if i%3==2:time.sleep(1.2)
     picks.sort(key=lambda x:abs(x["score"]),reverse=True)
@@ -277,9 +282,11 @@ def do_scan():
 def scanner_loop():
     while True:
         try:
-            if scanner_cfg["enabled"] and scanner_cfg["auto"] and get_kite_auth():
+            if scanner_cfg["enabled"] and scanner_cfg["auto"] and admin_state["token"]:
                 now=datetime.now()
-                if 3<=now.hour<=10:do_scan()
+                if 3<=now.hour<=10:
+                    auth={"X-Kite-Version":"3","Authorization":f"token {ADMIN_API_KEY}:{admin_state['token']}"}
+                    do_scan(auth)
         except Exception as e:log.error(f"Scanner: {e}");scan_results["scanning"]=False
         time.sleep(scanner_cfg.get("interval",10)*60)
 threading.Thread(target=scanner_loop,daemon=True).start()
@@ -476,10 +483,11 @@ def scan_cfg():
 @app.route("/api/scanner/trigger",methods=["POST"])
 @require_auth
 def scan_trigger():
-    if not scanner_cfg["enabled"]:return jsonify({"error":"Scanner is disabled. Ask admin to enable it from Configuration."}),400
     if scan_results["scanning"]:return jsonify({"error":"Scan already in progress. Please wait ~60 seconds."}),400
-    if not get_kite_auth():return jsonify({"error":"Kite not connected. Admin needs to login first."}),503
-    threading.Thread(target=do_scan,daemon=True).start()
+    if not admin_state["token"]:return jsonify({"error":"Kite not connected. Admin needs to login first."}),503
+    # Capture auth header NOW (in request context) and pass to thread
+    auth={"X-Kite-Version":"3","Authorization":f"token {ADMIN_API_KEY}:{admin_state['token']}"}
+    threading.Thread(target=do_scan,args=(auth,),daemon=True).start()
     return jsonify({"ok":True,"message":"Scanning 50 stocks... Results in ~60 seconds."})
 
 @app.route("/api/admin/disconnect",methods=["POST"])
