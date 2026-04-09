@@ -342,7 +342,7 @@ function fetchLive(){
   }).catch(function(){});
 }
 function loadHistory(){fetch(B+"/api/signals").then(function(r){return r.json()}).then(function(d){if(d.signals)S.signalHistory=d.signals}).catch(function(){})}
-function loadScan(){fetch(B+"/api/scanner").then(function(r){return r.json()}).then(function(d){S.scanData=d.data||null;renderStockContent()}).catch(function(){})}
+function loadScan(){fetch(B+"/api/scanner").then(function(r){return r.json()}).then(function(d){S.scanData=d.data||null;render()}).catch(function(){})}
 function triggerScan(){
   S.scanLoading=true;renderStockContent();
   fetch(B+"/api/scanner/trigger",{method:"POST"}).then(function(r){return r.json()}).then(function(d){
@@ -378,7 +378,7 @@ function doScan(){
     if(d.error){alert(d.error);S.scanLoading=false;render();return}
     function poll(){
       fetch(B+"/api/scanner").then(function(r){return r.json()}).then(function(d){
-        if(d.data&&!d.data.scanning){S.scanData=d.data;S.scanLoading=false;render()}
+        if(d.data&&!d.data.scanning){S.scanData=d.data;S.scanLoading=false;console.log("Scan done:",d.data.total,"stocks, buys:",d.data.top_buys?d.data.top_buys.length:0);render()}
         else setTimeout(poll,6000);
       }).catch(function(){S.scanLoading=false;render()});
     }
@@ -567,11 +567,15 @@ function renderMain(){
       o+='<div style="text-align:center;padding:30px"><div style="font-size:24px;margin-bottom:8px">⏳</div>';
       o+='<div style="color:var(--ac);font-size:12px">Scanning 50 stocks...</div>';
       o+='<div style="color:var(--dm);font-size:10px;margin-top:6px">This takes about 60 seconds</div></div>';
-    }else if(S.scanData&&S.scanData.top_buys&&(S.scanData.top_buys.length||S.scanData.top_sells.length)){
+    }else if(S.scanData&&S.scanData.total>0){
       o+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">';
       o+='<div style="font-size:10px;color:var(--dm)">'+S.scanData.total+' stocks · '+(S.scanData.last_scan?new Date(S.scanData.last_scan).toLocaleTimeString("en-IN"):"")+'</div>';
+      
+      if((!S.scanData.top_buys||!S.scanData.top_buys.length)&&(!S.scanData.top_sells||!S.scanData.top_sells.length)){
+        o+='<div style="text-align:center;padding:20px;color:var(--t2)">Scanned '+S.scanData.total+' stocks. No strong signals found. Market may be range-bound.</div>';
+      }
       o+='<button class="btn btn-sm" onclick="doScan()">↻ Rescan</button></div>';
-      if(S.scanData.top_buys.length){
+      if(S.scanData.top_buys&&S.scanData.top_buys.length>0){
         o+='<div style="font-size:11px;color:var(--gn);font-weight:700;margin-bottom:8px">🟢 TOP BUYS</div>';
         S.scanData.top_buys.forEach(function(p){
           o+='<div class="pick" style="border-left-color:var(--gn)" onclick="goToStock(\''+p.symbol+'\')">';

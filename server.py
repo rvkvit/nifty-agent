@@ -519,6 +519,22 @@ def eod_check():
         threading.Thread(target=send_tg,args=(msg,),daemon=True).start()
     return jsonify({"ok":True,"count":len(open_trades)})
 
+
+@app.route("/api/scanner/debug")
+@require_auth
+def scanner_debug():
+    """Debug endpoint - shows raw scan state."""
+    picks=scan_results.get("picks",[])
+    return jsonify({
+        "scanning":scan_results["scanning"],
+        "last_scan":scan_results.get("last_scan"),
+        "total_picks":len(picks),
+        "sample_picks":picks[:3] if picks else [],
+        "scores":[{"sym":p["symbol"],"score":p["score"],"verdict":p["verdict"]} for p in picks[:10]],
+        "kite_connected":get_kite_auth() is not None,
+        "scanner_cfg":scanner_cfg,
+    })
+
 @app.route("/api/option-chain/<idx>")
 @require_auth
 def oc(idx):return market_data(idx)
