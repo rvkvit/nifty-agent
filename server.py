@@ -198,57 +198,9 @@ def rsi_calc(p,n=14):
     return 100 if l==0 else round(100-100/(1+g/n/(l/n)),1)
 
 def scan_one(sym,auth=None):
-    try:
-        s=f"NSE:{sym}"
-        q=kite_get("/quote",params=[("i",s)],auth_override=auth)
-        if "error" in q:return None
-        qd=q.get("data",{}).get(s)
-        if not qd or not qd.get("last_price"):return None
-        ltp=qd["last_price"];ohlc=qd.get("ohlc",{});vol=qd.get("volume",0)or 0
-        pc=ohlc.get("close",ltp);chg=round(((ltp-pc)/pc)*100,2) if pc else 0
-        tok=qd.get("instrument_token")
-        if not tok:return None
-        today=datetime.now()
-        h=kite_get(f"/instruments/historical/{tok}/day",auth_override=auth,params={"from":(today-timedelta(days=90)).strftime("%Y-%m-%d"),"to":today.strftime("%Y-%m-%d"),"oi":"0"})
-        candles=h.get("data",{}).get("candles",[]) if "data" in h else []
-        if len(candles)<20:return None
-        cl=[c[4] for c in candles];hi=[c[2] for c in candles];lo=[c[3] for c in candles];vols=[c[5] for c in candles]
-        sc=0;facts=[]
-        r=rsi_calc(cl)
-        if r<30:sc+=2;facts.append(("RSI "+str(r)+" oversold","bull"))
-        elif r<40:sc+=1;facts.append(("RSI "+str(r),"bull"))
-        elif r>70:sc-=2;facts.append(("RSI "+str(r)+" overbought","bear"))
-        elif r>60:sc-=1;facts.append(("RSI "+str(r),"bear"))
-        e9,e21=ema_calc(cl,9),ema_calc(cl,21)
-        if e9>e21*1.005:sc+=1;facts.append(("EMA bullish cross","bull"))
-        elif e9<e21*.995:sc-=1;facts.append(("EMA bearish cross","bear"))
-        e50=ema_calc(cl,50) if len(cl)>=50 else ema_calc(cl,20)
-        if ltp>e50*1.02:sc+=1;facts.append(("Above 50EMA","bull"))
-        elif ltp<e50*.98:sc-=1;facts.append(("Below 50EMA","bear"))
-        avgv=sum(vols[-20:])/20 if len(vols)>=20 else sum(vols)/max(1,len(vols))
-        vr=round(vol/avgv,1) if avgv else 1
-        if vr>2 and chg>0:sc+=1;facts.append((str(vr)+"x vol+up","bull"))
-        elif vr>2 and chg<0:sc-=1;facts.append((str(vr)+"x vol+down","bear"))
-        if len(cl)>=10:
-            atr=sum(abs(cl[i]-cl[i-1]) for i in range(len(cl)-10,len(cl)))/10
-            if cl[-1]>cl[-1]-2*atr:sc+=1;facts.append(("Supertrend bull","bull"))
-            else:sc-=1;facts.append(("Supertrend bear","bear"))
-        if len(cl)>=20:
-            r5=((cl[-1]-cl[-5])/cl[-5])*100 if cl[-5] else 0
-            if r5>1:sc+=1;facts.append(("+"+str(round(r5,1))+"%/5d","bull"))
-            elif r5<-1:sc-=1;facts.append((str(round(r5,1))+"%/5d","bear"))
-        rh,rl2=max(hi[-20:]),min(lo[-20:])
-        if ((ltp-rl2)/rl2)*100<1.5:sc+=1;facts.append(("Near support","bull"))
-        elif ((rh-ltp)/ltp)*100<1.5:sc-=1;facts.append(("Near resistance","bear"))
-        if len(cl)>=3 and all(cl[-i]>cl[-i-1] for i in range(1,3)):sc+=1;facts.append(("3 green","bull"))
-        elif len(cl)>=3 and all(cl[-i]<cl[-i-1] for i in range(1,3)):sc-=1;facts.append(("3 red","bear"))
-        atr20=sum(hi[i]-lo[i] for i in range(-20,0))/20 if len(hi)>=20 else hi[-1]-lo[-1]
-        vd="STRONG BUY" if sc>=3 else "BUY" if sc>=1 else "STRONG SELL" if sc<=-3 else "SELL" if sc<=-1 else "HOLD"
-        entry=ltp;sl_p=round(max(rl2,ltp-1.5*atr20),2);t1=round(ltp+2*atr20,2);t2=round(ltp+3*atr20,2)
-        if sc<0:sl_p=round(min(rh,ltp+1.5*atr20),2);t1=round(ltp-2*atr20,2);t2=round(ltp-3*atr20,2)
-        return {"symbol":sym,"ltp":ltp,"change":chg,"volume":vol,"vol_ratio":vr,"rsi":r,"ema9":e9,"ema21":e21,"ema50":e50,"score":sc,"verdict":vd,"entry":entry,"sl":sl_p,"t1":t1,"t2":t2,"atr":round(atr20,2),"factors":facts}
-    except Exception as e:
-        log.error(f"Scan {sym}: {e}");return None
+    """Analyze a stock using proper candle-based technicals."""
+    result = analyze_stock_proper(sym, auth)
+    return result
 
 def do_scan(auth=None):
     if scan_results["scanning"]:return
@@ -381,6 +333,463 @@ def ping():return jsonify({"ok":True})
 @require_auth
 def status():
     return jsonify({"authenticated":get_kite_auth() is not None,"is_admin":session.get("is_admin",False),"instruments_count":len(admin_state["instruments"]) if admin_state["instruments"] else 0,"use_own_api":session.get("use_own_api",False),"scanner":scanner_cfg})
+
+
+# ─── PROPER TECHNICAL ANALYSIS ENGINE ───────────────────────
+# Uses real OHLC candles from Kite, not ticks.
+
+def calc_rsi(closes, period=14):
+    """RSI on proper close prices."""
+    if len(closes) < period + 1: return 50
+    gains = losses = 0
+    for i in range(len(closes)-period, len(closes)):
+        d = closes[i] - closes[i-1]
+        if d > 0: gains += d
+        else: losses -= d
+    ag, al = gains/period, losses/period
+    if al == 0: return 100
+    return round(100 - 100/(1 + ag/al), 1)
+
+def calc_ema(prices, period):
+    """EMA on close prices."""
+    if len(prices) < period: return prices[-1] if prices else 0
+    k = 2/(period+1)
+    e = sum(prices[:period])/period
+    for i in range(period, len(prices)):
+        e = prices[i]*k + e*(1-k)
+    return round(e, 2)
+
+def calc_supertrend(highs, lows, closes, factor=2, period=10):
+    """Supertrend using proper H/L/C data with ATR."""
+    if len(closes) < period + 1: return {"trend": "NEUTRAL", "value": closes[-1] if closes else 0}
+    # Calculate ATR
+    trs = []
+    for i in range(1, len(closes)):
+        tr = max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1]))
+        trs.append(tr)
+    if len(trs) < period: return {"trend": "NEUTRAL", "value": closes[-1]}
+    atr = sum(trs[-period:])/period
+    
+    # Supertrend calculation
+    hl2 = (highs[-1] + lows[-1]) / 2
+    upper = hl2 + factor * atr
+    lower = hl2 - factor * atr
+    
+    if closes[-1] > lower:
+        return {"trend": "BULLISH", "value": round(lower, 2)}
+    else:
+        return {"trend": "BEARISH", "value": round(upper, 2)}
+
+def calc_adx(highs, lows, closes, period=14):
+    """ADX - measures trend strength. >25 = trending, <20 = ranging."""
+    if len(closes) < period + 2: return 20
+    plus_dm = []
+    minus_dm = []
+    trs = []
+    for i in range(1, len(closes)):
+        up = highs[i] - highs[i-1]
+        down = lows[i-1] - lows[i]
+        plus_dm.append(up if up > down and up > 0 else 0)
+        minus_dm.append(down if down > up and down > 0 else 0)
+        trs.append(max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1])))
+    
+    if len(trs) < period: return 20
+    atr = sum(trs[-period:])/period
+    if atr == 0: return 20
+    plus_di = 100 * (sum(plus_dm[-period:])/period) / atr
+    minus_di = 100 * (sum(minus_dm[-period:])/period) / atr
+    dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di) if (plus_di + minus_di) > 0 else 0
+    return round(dx, 1)
+
+def calc_vwap_from_candles(candles):
+    """Real VWAP from candle data with volume."""
+    total_vol = 0
+    total_vp = 0
+    for c in candles:
+        # candle: [timestamp, open, high, low, close, volume]
+        typical = (c[2] + c[3] + c[4]) / 3
+        vol = c[5] if len(c) > 5 else 0
+        total_vp += typical * vol
+        total_vol += vol
+    if total_vol == 0: return candles[-1][4] if candles else 0
+    return round(total_vp / total_vol, 2)
+
+def calc_volume_ratio(candles, lookback=20):
+    """Current volume vs average volume."""
+    if len(candles) < 2: return 1
+    vols = [c[5] for c in candles if len(c) > 5]
+    if not vols or len(vols) < 2: return 1
+    current = vols[-1]
+    avg = sum(vols[-lookback-1:-1]) / min(lookback, len(vols)-1) if len(vols) > 1 else current
+    return round(current / avg, 1) if avg > 0 else 1
+
+def analyze_index_proper(idx, auth=None):
+    """
+    PROPER index analysis using real candle data.
+    Multi-timeframe: 5-min for entry, 15-min for trend, daily for bias.
+    Returns analysis dict with score, direction, and all indicators.
+    """
+    # 1. Get spot quote (includes real VWAP as average_price)
+    spot_sym = "NSE:NIFTY 50" if idx.upper() == "NIFTY" else "NSE:NIFTY BANK"
+    sq = kite_get("/quote", params=[("i", spot_sym)], auth_override=auth)
+    if "error" in sq: return None
+    qd = sq.get("data", {}).get(spot_sym, {})
+    if not qd: return None
+    
+    spot = qd.get("last_price", 0)
+    real_vwap = qd.get("average_price", 0) or spot  # This is the REAL VWAP from exchange
+    ohlc = qd.get("ohlc", {})
+    day_open = ohlc.get("open", spot)
+    day_high = ohlc.get("high", spot)
+    day_low = ohlc.get("low", spot)
+    prev_close = ohlc.get("close", spot)
+    
+    # Get instrument token for historical data
+    # For NIFTY 50 index, token is 256265. For NIFTY BANK, it's 260105.
+    token = qd.get("instrument_token", 256265 if idx.upper() == "NIFTY" else 260105)
+    
+    today = datetime.now()
+    
+    # 2. Fetch 5-minute candles (today)
+    candles_5m = []
+    r5 = kite_get(f"/instruments/historical/{token}/5minute",
+                  params={"from": today.strftime("%Y-%m-%d"), "to": today.strftime("%Y-%m-%d")},
+                  auth_override=auth)
+    if "data" in r5: candles_5m = r5["data"].get("candles", [])
+    
+    # 3. Fetch 15-minute candles (last 3 days for trend)
+    candles_15m = []
+    r15 = kite_get(f"/instruments/historical/{token}/15minute",
+                   params={"from": (today - timedelta(days=3)).strftime("%Y-%m-%d"), "to": today.strftime("%Y-%m-%d")},
+                   auth_override=auth)
+    if "data" in r15: candles_15m = r15["data"].get("candles", [])
+    
+    # 4. Fetch daily candles (last 30 days for daily bias)
+    candles_day = []
+    rd = kite_get(f"/instruments/historical/{token}/day",
+                  params={"from": (today - timedelta(days=30)).strftime("%Y-%m-%d"), "to": today.strftime("%Y-%m-%d")},
+                  auth_override=auth)
+    if "data" in rd: candles_day = rd["data"].get("candles", [])
+    
+    # ─── COMPUTE INDICATORS ────────────────────────────────
+    score = 0
+    reasons = []
+    
+    # === 5-MIN TIMEFRAME (entry timing) ===
+    if len(candles_5m) >= 15:
+        c5 = [c[4] for c in candles_5m]  # closes
+        h5 = [c[2] for c in candles_5m]  # highs
+        l5 = [c[3] for c in candles_5m]  # lows
+        
+        rsi_5m = calc_rsi(c5)
+        ema9_5m = calc_ema(c5, 9)
+        ema21_5m = calc_ema(c5, 21)
+        st_5m = calc_supertrend(h5, l5, c5)
+        vwap_dist = round(spot - real_vwap, 2)
+        vol_ratio = calc_volume_ratio(candles_5m)
+        
+        # RSI (5-min)
+        if rsi_5m < 25: score += 2; reasons.append({"t": f"5m RSI {rsi_5m} deeply oversold", "d": "bull", "w": 2})
+        elif rsi_5m < 35: score += 1; reasons.append({"t": f"5m RSI {rsi_5m} oversold zone", "d": "bull", "w": 1})
+        elif rsi_5m > 75: score -= 2; reasons.append({"t": f"5m RSI {rsi_5m} deeply overbought", "d": "bear", "w": 2})
+        elif rsi_5m > 65: score -= 1; reasons.append({"t": f"5m RSI {rsi_5m} overbought zone", "d": "bear", "w": 1})
+        else: reasons.append({"t": f"5m RSI {rsi_5m} neutral", "d": "neut", "w": 0})
+        
+        # EMA crossover (5-min)
+        ema_diff = ema9_5m - ema21_5m
+        if ema_diff > 5: score += 1; reasons.append({"t": f"5m EMA9 > EMA21 by {ema_diff:.0f}", "d": "bull", "w": 1})
+        elif ema_diff < -5: score -= 1; reasons.append({"t": f"5m EMA9 < EMA21 by {abs(ema_diff):.0f}", "d": "bear", "w": 1})
+        else: reasons.append({"t": f"5m EMAs flat (diff {ema_diff:.0f})", "d": "neut", "w": 0})
+        
+        # VWAP (real exchange VWAP)
+        if vwap_dist > 20: score += 1; reasons.append({"t": f"Spot {vwap_dist:.0f} above VWAP — buyers", "d": "bull", "w": 1})
+        elif vwap_dist < -20: score -= 1; reasons.append({"t": f"Spot {abs(vwap_dist):.0f} below VWAP — sellers", "d": "bear", "w": 1})
+        else: reasons.append({"t": f"Near VWAP ({vwap_dist:+.0f})", "d": "neut", "w": 0})
+        
+        # Supertrend (5-min)
+        if st_5m["trend"] == "BULLISH": score += 1; reasons.append({"t": f"5m Supertrend BULL at {st_5m['value']}", "d": "bull", "w": 1})
+        else: score -= 1; reasons.append({"t": f"5m Supertrend BEAR at {st_5m['value']}", "d": "bear", "w": 1})
+        
+        # Volume confirmation
+        if vol_ratio >= 1.5 and spot > real_vwap: score += 1; reasons.append({"t": f"Volume {vol_ratio}x + above VWAP", "d": "bull", "w": 1})
+        elif vol_ratio >= 1.5 and spot < real_vwap: score -= 1; reasons.append({"t": f"Volume {vol_ratio}x + below VWAP", "d": "bear", "w": 1})
+        else: reasons.append({"t": f"Volume {vol_ratio}x normal", "d": "neut", "w": 0})
+    
+    # === 15-MIN TIMEFRAME (trend direction) ===
+    if len(candles_15m) >= 20:
+        c15 = [c[4] for c in candles_15m]
+        h15 = [c[2] for c in candles_15m]
+        l15 = [c[3] for c in candles_15m]
+        
+        st_15m = calc_supertrend(h15, l15, c15)
+        ema9_15m = calc_ema(c15, 9)
+        ema21_15m = calc_ema(c15, 21)
+        adx = calc_adx(h15, l15, c15)
+        
+        # 15-min trend (higher weight)
+        if st_15m["trend"] == "BULLISH" and ema9_15m > ema21_15m:
+            score += 2; reasons.append({"t": f"15m TREND BULLISH (ST+EMA confirm)", "d": "bull", "w": 2})
+        elif st_15m["trend"] == "BEARISH" and ema9_15m < ema21_15m:
+            score -= 2; reasons.append({"t": f"15m TREND BEARISH (ST+EMA confirm)", "d": "bear", "w": 2})
+        elif st_15m["trend"] == "BULLISH":
+            score += 1; reasons.append({"t": f"15m Supertrend bullish", "d": "bull", "w": 1})
+        elif st_15m["trend"] == "BEARISH":
+            score -= 1; reasons.append({"t": f"15m Supertrend bearish", "d": "bear", "w": 1})
+        
+        # ADX trend strength
+        if adx > 25: reasons.append({"t": f"ADX {adx} — strong trend (good for trading)", "d": "neut", "w": 0})
+        elif adx < 20:
+            reasons.append({"t": f"ADX {adx} — weak/ranging (AVOID trading)", "d": "neut", "w": 0})
+            score = int(score * 0.5)  # Halve the score in ranging markets
+    
+    # === DAILY TIMEFRAME (bias) ===
+    if len(candles_day) >= 10:
+        cd = [c[4] for c in candles_day]
+        hd = [c[2] for c in candles_day]
+        ld = [c[3] for c in candles_day]
+        
+        ema20_d = calc_ema(cd, 20)
+        st_daily = calc_supertrend(hd, ld, cd, factor=3, period=10)
+        
+        # Daily bias
+        if spot > ema20_d and st_daily["trend"] == "BULLISH":
+            score += 1; reasons.append({"t": f"Daily BULLISH (above 20EMA + ST)", "d": "bull", "w": 1})
+        elif spot < ema20_d and st_daily["trend"] == "BEARISH":
+            score -= 1; reasons.append({"t": f"Daily BEARISH (below 20EMA + ST)", "d": "bear", "w": 1})
+        else:
+            reasons.append({"t": f"Daily mixed — no strong bias", "d": "neut", "w": 0})
+    
+    # === PCR (OI based) ===
+    # We still use PCR but look at the actual values more carefully
+    step = 50 if idx.upper() == "NIFTY" else 100
+    atm = round(spot / step) * step
+    
+    return {
+        "spot": spot, "vwap": real_vwap, "ohlc": ohlc,
+        "day_high": day_high, "day_low": day_low,
+        "score": score, "reasons": reasons,
+        "atm": atm, "token": token,
+    }
+
+def analyze_stock_proper(symbol, auth=None):
+    """
+    Proper stock analysis using multi-timeframe candle data.
+    Returns score and recommendation.
+    """
+    sym = f"NSE:{symbol}"
+    q = kite_get("/quote", params=[("i", sym)], auth_override=auth)
+    if "error" in q: return None
+    qd = q.get("data", {}).get(sym)
+    if not qd or not qd.get("last_price"): return None
+    
+    ltp = qd["last_price"]
+    ohlc = qd.get("ohlc", {})
+    volume = qd.get("volume", 0) or 0
+    prev_close = ohlc.get("close", ltp)
+    chg = round(((ltp - prev_close) / prev_close) * 100, 2) if prev_close else 0
+    token = qd.get("instrument_token")
+    if not token: return None
+    
+    today = datetime.now()
+    
+    # Fetch daily candles (90 days)
+    h = kite_get(f"/instruments/historical/{token}/day",
+                 params={"from": (today - timedelta(days=90)).strftime("%Y-%m-%d"),
+                         "to": today.strftime("%Y-%m-%d"), "oi": "0"},
+                 auth_override=auth)
+    candles = h.get("data", {}).get("candles", []) if "data" in h else []
+    if len(candles) < 20: return None
+    
+    closes = [c[4] for c in candles]
+    highs = [c[2] for c in candles]
+    lows = [c[3] for c in candles]
+    volumes = [c[5] for c in candles if len(c) > 5]
+    
+    score = 0
+    factors = []
+    
+    # 1. RSI (14) on daily
+    rsi_val = calc_rsi(closes)
+    if rsi_val < 30: score += 2; factors.append(("RSI " + str(rsi_val) + " oversold", "bull"))
+    elif rsi_val < 40: score += 1; factors.append(("RSI " + str(rsi_val) + " low", "bull"))
+    elif rsi_val > 70: score -= 2; factors.append(("RSI " + str(rsi_val) + " overbought", "bear"))
+    elif rsi_val > 60: score -= 1; factors.append(("RSI " + str(rsi_val) + " high", "bear"))
+    else: factors.append(("RSI " + str(rsi_val), "neut"))
+    
+    # 2. EMA 9/21 crossover
+    ema9 = calc_ema(closes, 9)
+    ema21 = calc_ema(closes, 21)
+    if ema9 > ema21 * 1.005: score += 1; factors.append(("EMA9 > EMA21", "bull"))
+    elif ema9 < ema21 * 0.995: score -= 1; factors.append(("EMA9 < EMA21", "bear"))
+    
+    # 3. Price vs 50 EMA
+    ema50 = calc_ema(closes, 50) if len(closes) >= 50 else calc_ema(closes, 20)
+    if ltp > ema50 * 1.02: score += 1; factors.append(("Above 50EMA (uptrend)", "bull"))
+    elif ltp < ema50 * 0.98: score -= 1; factors.append(("Below 50EMA (downtrend)", "bear"))
+    
+    # 4. Supertrend (daily)
+    st = calc_supertrend(highs, lows, closes, factor=2, period=10)
+    if st["trend"] == "BULLISH": score += 1; factors.append(("Supertrend bullish", "bull"))
+    else: score -= 1; factors.append(("Supertrend bearish", "bear"))
+    
+    # 5. Volume surge
+    if volumes and len(volumes) >= 20:
+        avg_vol = sum(volumes[-20:]) / 20
+        vol_ratio = round(volume / avg_vol, 1) if avg_vol > 0 else 1
+        if vol_ratio > 1.5 and chg > 0: score += 1; factors.append((str(vol_ratio) + "x volume + up", "bull"))
+        elif vol_ratio > 1.5 and chg < 0: score -= 1; factors.append((str(vol_ratio) + "x volume + down", "bear"))
+    
+    # 6. ADX (trend strength)
+    adx = calc_adx(highs, lows, closes)
+    if adx < 20:
+        score = int(score * 0.5)  # Weak trend = reduce confidence
+        factors.append(("ADX " + str(adx) + " weak trend", "neut"))
+    elif adx > 30:
+        factors.append(("ADX " + str(adx) + " strong trend", "neut"))
+    
+    # 7. Support/Resistance
+    recent_high = max(highs[-20:])
+    recent_low = min(lows[-20:])
+    if ((ltp - recent_low) / recent_low) * 100 < 2: score += 1; factors.append(("Near 20d support", "bull"))
+    elif ((recent_high - ltp) / ltp) * 100 < 2: score -= 1; factors.append(("Near 20d resistance", "bear"))
+    
+    # 8. Momentum (5-day ROC)
+    if len(closes) >= 5:
+        roc5 = ((closes[-1] - closes[-5]) / closes[-5]) * 100
+        if roc5 > 2: score += 1; factors.append(("+" + str(round(roc5, 1)) + "% 5d momentum", "bull"))
+        elif roc5 < -2: score -= 1; factors.append((str(round(roc5, 1)) + "% 5d momentum", "bear"))
+    
+    # Calculate targets using ATR (proper way)
+    atr20 = sum(highs[i] - lows[i] for i in range(-20, 0)) / 20 if len(highs) >= 20 else highs[-1] - lows[-1]
+    
+    verdict = "STRONG BUY" if score >= 4 else "BUY" if score >= 2 else "STRONG SELL" if score <= -4 else "SELL" if score <= -2 else "HOLD"
+    
+    # 1:2 minimum R:R for targets
+    if score >= 2:
+        sl = round(max(recent_low, ltp - 1.5 * atr20), 2)
+        risk = ltp - sl
+        t1 = round(ltp + risk * 2, 2)   # 1:2 R:R
+        t2 = round(ltp + risk * 3, 2)   # 1:3 R:R
+    elif score <= -2:
+        sl = round(min(recent_high, ltp + 1.5 * atr20), 2)
+        risk = sl - ltp
+        t1 = round(ltp - risk * 2, 2)
+        t2 = round(ltp - risk * 3, 2)
+    else:
+        sl = t1 = t2 = 0
+    
+    return {
+        "symbol": symbol, "ltp": ltp, "change": chg, "volume": volume,
+        "rsi": rsi_val, "ema9": ema9, "ema21": ema21, "ema50": ema50,
+        "adx": adx, "supertrend": st["trend"],
+        "score": score, "verdict": verdict, "factors": factors,
+        "entry": ltp, "sl": sl, "t1": t1, "t2": t2,
+        "atr": round(atr20, 2),
+    }
+
+# Update the main analysis endpoint
+@app.route("/api/analysis/<idx>")
+@require_auth
+def proper_analysis(idx):
+    """Multi-timeframe analysis using real candle data."""
+    auth = None
+    if admin_state["token"]:
+        auth = {"X-Kite-Version": "3", "Authorization": f"token {ADMIN_API_KEY}:{admin_state['token']}"}
+    result = analyze_index_proper(idx, auth)
+    if not result:
+        return jsonify({"error": "Analysis failed — Kite may not be connected"}), 503
+    
+    # Also get option chain data for PCR
+    ce_opt, pe_opt, chain = find_options(idx, result["spot"])
+    pcr_val = 0
+    mp = result["atm"]
+    if chain:
+        tp = sum(r["pe"]["oi"] for r in chain)
+        tc = sum(r["ce"]["oi"] for r in chain)
+        pcr_val = round(tp/tc, 2) if tc > 0 else 0
+        
+        # PCR scoring
+        if pcr_val > 1.3:
+            result["score"] += 1
+            result["reasons"].append({"t": f"PCR {pcr_val} — heavy put writing (bullish)", "d": "bull", "w": 1})
+        elif pcr_val < 0.7:
+            result["score"] -= 1
+            result["reasons"].append({"t": f"PCR {pcr_val} — heavy call writing (bearish)", "d": "bear", "w": 1})
+        else:
+            result["reasons"].append({"t": f"PCR {pcr_val} — neutral", "d": "neut", "w": 0})
+        
+        # Max pain
+        mv = float("inf")
+        for r in chain:
+            p = sum(max(0, o["ce"]["oi"]*(r["strike"]-o["strike"])) + max(0, o["pe"]["oi"]*(o["strike"]-r["strike"])) for o in chain)
+            if p < mv: mv, mp = p, r["strike"]
+    
+    # Build signal if score is strong enough (need ≥5 for proper conviction)
+    signal = None
+    now = datetime.now()
+    hr, mn = now.hour, now.minute
+    # Trading window: 10:00 AM to 2:30 PM IST (4:30 to 9:00 UTC)
+    time_ok = (hr > 4 or (hr == 4 and mn >= 30)) and (hr < 9 or (hr == 9 and mn == 0))
+    
+    if abs(result["score"]) >= 5 and time_ok:
+        direction = "BULLISH" if result["score"] > 0 else "BEARISH"
+        rec = ce_opt if direction == "BULLISH" else pe_opt
+        
+        if rec and rec["ltp"] > 0:
+            opt_ltp = rec["ltp"]
+            # 1:2 minimum R:R
+            sl_pct = 0.25  # 25% SL on premium
+            sl_points = max(opt_ltp * sl_pct, 10)
+            sl_price = round(opt_ltp - sl_points, 2)
+            t1_price = round(opt_ltp + sl_points * 2, 2)  # 1:2 R:R
+            t2_price = round(opt_ltp + sl_points * 3, 2)  # 1:3 R:R
+            
+            lot = rec.get("lot_size", 65)
+            max_risk = 200000 * 0.02  # Default capital, frontend can override
+            risk_per_lot = sl_points * lot
+            lots = max(1, int(max_risk / risk_per_lot)) if risk_per_lot > 0 else 1
+            
+            signal = {
+                "dir": direction,
+                "tradingsymbol": rec["tradingsymbol"],
+                "strike": rec["strike"],
+                "optionType": rec["type"],
+                "expiry": rec["expiry"],
+                "entryPrice": opt_ltp,
+                "slPrice": sl_price,
+                "slPoints": round(sl_points, 2),
+                "t1Price": t1_price,
+                "t2Price": t2_price,
+                "lots": lots,
+                "lotSize": lot,
+                "totalRisk": round(risk_per_lot * lots),
+                "totalReward": round((t1_price - opt_ltp) * lot * lots),
+                "rr": round((t1_price - opt_ltp) / sl_points, 1),
+                "conf": min(abs(result["score"]), 10),
+                "volume": rec.get("volume", 0),
+                "oi": rec.get("oi", 0),
+                "spread": rec.get("spread", 0),
+                "spotAtSignal": result["spot"],
+            }
+    
+    return jsonify({
+        "data": {
+            "spot": result["spot"],
+            "vwap": result.get("vwap", 0),
+            "ohlc": result.get("ohlc", {}),
+            "atm": result["atm"],
+            "pcr": pcr_val,
+            "max_pain": mp,
+            "chain": chain,
+            "score": result["score"],
+            "reasons": result["reasons"],
+            "signal": signal,
+            "recommended_ce": ce_opt,
+            "recommended_pe": pe_opt,
+            "timestamp": datetime.now().isoformat(),
+        }
+    })
+
 
 @app.route("/api/market-data-both")
 @require_auth

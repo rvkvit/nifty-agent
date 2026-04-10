@@ -289,7 +289,7 @@ function runAnalysis(){
       var ltp=rec.ltp,slP=Math.max(ltp*.3,15),sl=+(ltp-slP).toFixed(2);
       var t1=+(ltp*1.4).toFixed(2),t2=+(ltp*1.7).toFixed(2);
       var rpl=slP*lot,lots=Math.max(1,Math.floor(mr/rpl));
-      sig={dir:dir,tradingsymbol:rec.tradingsymbol,strike:rec.strike,optionType:rec.type,expiry:rec.expiry,entryPrice:ltp,slPrice:sl,slPoints:+slP.toFixed(2),t1Price:t1,t2Price:t2,lots:lots,lotSize:lot,totalRisk:+(rpl*lots).toFixed(0),totalReward:+((t1-ltp)*lot*lots).toFixed(0),rr:+((t1-ltp)/slP).toFixed(1),conf:Math.min(Math.abs(sc),9),volume:rec.volume,oi:rec.oi,spread:rec.spread,reasons:R,spotAtSignal:spot};
+      sig={dir:dir,tradingsymbol:rec.tradingsymbol,strike:rec.strike,optionType:rec.type,expiry:rec.expiry,entryPrice:ltp,slPrice:sl,slPoints:+slP.toFixed(2),t1Price:t1,t2Price:t2,lots:lots,lotSize:lot,totalRisk:+(rpl*lots).toFixed(0),totalReward:+((t1-ltp)*lot*lots).toFixed(0),rr:+((t1-ltp)/slP).toFixed(1)||2.0,conf:Math.min(Math.abs(sc),9),volume:rec.volume,oi:rec.oi,spread:rec.spread,reasons:R,spotAtSignal:spot};
     }
   }
   return{score:sc,reasons:R,signal:sig,a:a};
@@ -333,13 +333,23 @@ function fetchLive(){
     if(d.data.nifty){S.nSpot=d.data.nifty.spot;S.nOhlc=d.data.nifty.ohlc||{};S.nHist=S.nHist.slice(-99).concat([d.data.nifty.spot])}
     if(d.data.banknifty){S.bSpot=d.data.banknifty.spot;S.bOhlc=d.data.banknifty.ohlc||{};S.bHist=S.bHist.slice(-99).concat([d.data.banknifty.spot])}
   }).catch(function(){});
-  // Fetch active index option chain
-  fetch(B+"/api/market-data/"+S.idx).then(function(r){return r.json()}).then(function(d){
+  // Fetch proper multi-timeframe analysis
+  fetch(B+"/api/analysis/"+S.idx).then(function(r){return r.json()}).then(function(d){
     if(!d.data)return;
     if(d.data.chain&&d.data.chain.length)S.chain=d.data.chain;
     if(d.data.recommended_ce)S.recCE=d.data.recommended_ce;
     if(d.data.recommended_pe)S.recPE=d.data.recommended_pe;
-  }).catch(function(){});
+    // Use server-side analysis instead of client-side
+    if(d.data.score!==undefined){
+      S.serverAnalysis=d.data;
+      S.result={score:d.data.score,reasons:d.data.reasons,signal:d.data.signal,a:{
+        pcr:d.data.pcr,mp:d.data.max_pain,vwap:d.data.vwap,
+        rsi:0,e9:0,e21:0,st:{t:"",v:0},pv:{r2:0,r1:0,pp:0,s1:0,s2:0},hi:0,lo:0
+      }};
+      // Gate the signal
+      if(d.data.signal)gateSignal(S.result);
+    }
+  }).catch(function(e){console.error("Analysis error:",e)});
 }
 function loadHistory(){fetch(B+"/api/signals").then(function(r){return r.json()}).then(function(d){if(d.signals)S.signalHistory=d.signals}).catch(function(){})}
 function loadScan(){fetch(B+"/api/scanner").then(function(r){return r.json()}).then(function(d){S.scanData=d.data||null;render()}).catch(function(){})}
@@ -459,7 +469,7 @@ function renderMain(){
     }else{
       o+='<div style="text-align:center;padding:24px 12px">';
       o+='<div style="font-size:28px;margin-bottom:8px">'+(Math.abs(sc)>=CFG.minScore?"⚡":Math.abs(sc)>=3?"⏳":"⏸")+'</div>';
-      o+='<div style="font-size:14px;color:var(--t2)">Score: '+sc+'/9 · Need ≥'+CFG.minScore+'</div>';
+      o+='<div style="font-size:14px;color:var(--t2)">Score: '+sc+'/10 · Need ≥'+CFG.minScore+'</div>';
       o+='<div style="font-size:11px;color:var(--dm);margin-top:4px">'+S.todaySignals.length+'/'+CFG.maxSig+' signals today</div>';
       if(S.result&&S.result._block)o+='<div style="margin-top:8px;padding:6px 12px;border-radius:8px;background:#ffc40010;color:var(--yl);font-size:10px">🚫 '+S.result._block+'</div>';
       o+='<div class="score-bar" style="margin-top:12px">';
